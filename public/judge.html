@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>判定者 | 早押し・ボードクイズ</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="topbar">
+  <div class="brand">🧑‍⚖️ 判定者画面</div>
+  <div class="room-tag" id="room-tag">-</div>
+</div>
+
+<div class="wrap">
+  <div id="error-area"></div>
+
+  <div id="main-area" style="display:none;">
+
+    <div class="card" style="margin-bottom:1em;">
+      <h3 style="margin-bottom:.8em;">進行操作</h3>
+      <div style="display:flex; gap:.6em; flex-wrap:wrap;">
+        <button class="gold" id="btn-new-question">次の問題へ（ボード・早押しをリセット）</button>
+        <button class="secondary" id="btn-lock">回答をロックする</button>
+        <button class="secondary" id="btn-reset-buzz">早押しだけリセット</button>
+      </div>
+      <div class="hint" id="phase-status" style="margin-top:.7em;"></div>
+    </div>
+
+    <div class="card" style="margin-bottom:1em;">
+      <h3 style="margin-bottom:.6em;">プロジェクター表示の切り替え</h3>
+      <div style="display:flex; gap:.6em; align-items:center; flex-wrap:wrap;">
+        <button class="secondary" id="btn-display-grid">全員を一覧表示</button>
+        <span class="hint">または、下の回答者タイルをクリックすると、その人の解答を大きく表示します。</span>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:1em;">
+      <h3 style="margin-bottom:.6em;">早押し結果</h3>
+      <div class="buzzer-board" id="buzzer-board">
+        <div class="hint">まだ誰も押していません</div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:1em;">
+      <h3 style="margin-bottom:.6em;">早押し機（Arduino）テスト（任意）</h3>
+      <p class="hint">早押し機を使わない場合、このカードは無視して構いません。ボード解答だけで進行できます。
+        実機のArduinoは<strong>投影画面（display.html）</strong>のブラウザから接続します。
+        ここでは実機なしで早押し動作を確認できます。</p>
+      <div id="simulate-buttons" style="display:flex; gap:.4em; margin-top:.6em; flex-wrap:wrap;"></div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-bottom:.8em;">回答者一覧</h3>
+      <div class="player-grid" id="player-grid"></div>
+    </div>
+
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="js/board-sync.js"></script>
+<script>
+const params = new URLSearchParams(window.location.search);
+const roomName = params.get('room');
+const password = params.get('password') || '';
+
+if (!roomName) {
+  document.getElementById('error-area').innerHTML = '<div class="error-msg">部屋情報が不足しています。ホームからやり直してください。</div>';
+  throw new Error('missing room');
+}
+document.getElementById('room-tag').textContent = roomName;
+
+const socket = io();
+let latestState = null;
+
+socket.on('connect', () => {
+  socket.emit('join_room', { roomName, password, role: 'judge' }, (res) => {
+    if (res.error) {
+      document.getElementById('error-area').innerHTML = `<div class="error-msg">${res.error}</div>`;
+      return;
+    }
+    document.getElementById('main-area').style.display = 'block';
+    render(res.state);
+  });
+});
+
+socket.on('room_state', render);
+
+socket.on('draw_stroke', (data) => {
+  BoardSync.stroke(data.playerId, data);
+  refreshTileCanvas(data.playerId);
+});
+socket.on('clear_canvas', ({ playerId }) => {
+  BoardSync.clear(playerId);
+  refreshTileCanvas(playerId);
+});
+socket.on('reset_canvases', () => {
+  if (latestState) latestState.players.forEach(p => BoardSync.clear(p.id));
+});
+
+document.getElementById('btn-new-question').onclick = () => socket.emit('judge_new_question');
+document.getElementById('btn-lock').onclick = () => socket.emit('judge_lock');
+document.getElementById('btn-reset-buzz').onclick = () => socket.emit('judge_reset_buzzer');
+document.getElementById('btn-display-grid').onclick = () => socket.emit('judge_set_display', { mode: 'grid' });
+
+function render(state) {
+  if (!state) return;
+  latestState = state;
+
+  const phaseLabels = { idle: '待機中', writing: '回答受付中', locked: 'ロック済み' };
+  document.getElementById('phase-status').textContent =
+    `状態: ${phaseLabels[state.phase] || state.phase} / 表示: ${state.display.mode === 'grid' ? '全員一覧' : '個別表示'}`;
+
+  // 早押し結果
+  const buzzBox = document.getElementById('buzzer-board');
+  if (!state.buzzOrder.length) {
+    buzzBox.innerHTML = '<div class="hint">まだ誰も押していません</div>';
+  } else {
+    buzzBox.innerHTML = state.buzzOrder.map((b, i) => `
+      <div class="buzzer-row ${i === 0 ? 'lit' : ''}">
+        <div class="buzzer-rank">${i + 1}</div>
+        <div class="buzzer-name">${escapeHtml(b.name)}</div>
+        <div class="buzzer-time">#${b.buzzerId}</div>
+      </div>
+    `).join('');
+  }
+
+  // 回答者一覧
+  const grid = document.getElementById('player-grid');
+  grid.innerHTML = '';
+  state.players.forEach((p) => {
+    const tile = document.createElement('div');
+    tile.className = 'player-tile' + (p.correct === true ? ' correct' : p.correct === false ? ' incorrect' : '');
+
+    const head = document.createElement('div');
+    head.className = 'tile-head';
+    head.innerHTML = `<span>${escapeHtml(p.name)}</span><span class="status-dot ${p.hasSubmitted ? 'on' : ''}"></span>`;
+
+    const canvasWrap = document.createElement('div');
+    canvasWrap.className = 'tile-canvas';
+    canvasWrap.dataset.playerId = p.id;
+    if (p.imageData) {
+      const img = document.createElement('img');
+      img.src = p.imageData;
+      canvasWrap.appendChild(img);
+    } else {
+      const c = BoardSync.getCanvas(p.id);
+      c.style.width = '100%';
+      c.style.height = '100%';
+      canvasWrap.appendChild(c);
+    }
+
+    const actions = document.createElement('div');
+    actions.className = 'tile-actions';
+    const okBtn = document.createElement('button');
+    okBtn.textContent = '正解';
+    okBtn.className = 'gold';
+    okBtn.onclick = () => socket.emit('judge_mark', { playerId: p.id, correct: true });
+    const ngBtn = document.createElement('button');
+    ngBtn.textContent = '不正解';
+    ngBtn.className = 'danger';
+    ngBtn.onclick = () => socket.emit('judge_mark', { playerId: p.id, correct: false });
+    actions.appendChild(okBtn);
+    actions.appendChild(ngBtn);
+
+    tile.appendChild(head);
+    tile.appendChild(canvasWrap);
+    tile.appendChild(actions);
+    tile.onclick = (e) => {
+      if (e.target.tagName === 'BUTTON') return;
+      socket.emit('judge_set_display', { mode: 'single', selectedPlayerId: p.id });
+    };
+    grid.appendChild(tile);
+  });
+}
+
+function refreshTileCanvas(playerId) {
+  if (!latestState) return;
+  const p = latestState.players.find(pl => pl.id === playerId);
+  if (!p || p.imageData) return; // 確定済みなら書き換えない
+  const wrap = document.querySelector(`.tile-canvas[data-player-id="${playerId}"]`);
+  if (!wrap) return;
+  if (!wrap.querySelector('canvas')) {
+    wrap.innerHTML = '';
+    const c = BoardSync.getCanvas(playerId);
+    c.style.width = '100%';
+    c.style.height = '100%';
+    wrap.appendChild(c);
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+// --- 早押しシミュレーター(テスト用) ---
+const simWrap = document.getElementById('simulate-buttons');
+for (let i = 1; i <= 8; i++) {
+  const b = document.createElement('button');
+  b.className = 'secondary';
+  b.textContent = `#${i} を押す（テスト）`;
+  b.onclick = () => fetch('/api/serial-simulate', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ roomName, buzzerId: i })
+  });
+  simWrap.appendChild(b);
+}
+
+</script>
+</body>
+</html>

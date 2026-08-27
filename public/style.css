@@ -1,0 +1,258 @@
+/* ==========================================================================
+   デザイントークン
+   モチーフ: 早押し番組の「解答席パネル」「ランプ盤」。
+   プロジェクター投影を想定し、遠目でも読める高コントラスト・大きめ文字。
+   オフライン会場での使用が前提のため、外部フォント/CDNには依存しない。
+   ========================================================================== */
+:root {
+  --stage-bg: #12151c;
+  --panel-bg: #1c212c;
+  --panel-bg-raised: #262d3b;
+  --line: #333c4d;
+  --text: #f4f6fb;
+  --text-muted: #8b94a8;
+  --gold: #f2b705;      /* 正解・1着ランプ */
+  --red: #e6484f;       /* 誤答・ボタン点灯 */
+  --blue: #4cc9f0;      /* 回答者アイデンティティ */
+  --green: #45c98a;
+
+  --font: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic UI", "Segoe UI", sans-serif;
+  --radius: 14px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--stage-bg);
+  color: var(--text);
+  font-family: var(--font);
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+h1, h2, h3 { margin: 0 0 .5em; letter-spacing: .01em; }
+
+a { color: var(--blue); }
+
+button {
+  font-family: inherit;
+  font-weight: 700;
+  border: none;
+  border-radius: 10px;
+  padding: .75em 1.4em;
+  font-size: 1rem;
+  cursor: pointer;
+  background: var(--blue);
+  color: #05121a;
+  transition: transform .08s ease, filter .15s ease;
+}
+button:hover { filter: brightness(1.08); }
+button:active { transform: scale(.97); }
+button.secondary { background: var(--panel-bg-raised); color: var(--text); border: 1px solid var(--line); }
+button.danger { background: var(--red); color: #fff; }
+button.gold { background: var(--gold); color: #201700; }
+button:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+
+input, select {
+  font-family: inherit;
+  font-size: 1rem;
+  background: var(--panel-bg-raised);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 8px;
+  padding: .6em .8em;
+}
+input:focus, select:focus, button:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 2px;
+}
+
+label { font-size: .85rem; color: var(--text-muted); display: block; margin-bottom: .3em; }
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: .8em 1.2em;
+  background: var(--panel-bg);
+  border-bottom: 1px solid var(--line);
+}
+.topbar .brand { font-weight: 800; letter-spacing: .04em; }
+.topbar .room-tag {
+  font-size: .8rem;
+  color: var(--text-muted);
+  padding: .3em .7em;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+.wrap {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 1.5em;
+  width: 100%;
+  flex: 1;
+}
+
+.card {
+  background: var(--panel-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.4em;
+}
+
+.field { margin-bottom: 1em; }
+
+.hint { color: var(--text-muted); font-size: .82rem; margin-top: .4em; }
+
+.error-msg {
+  color: var(--red);
+  background: rgba(230,72,79,.12);
+  border: 1px solid rgba(230,72,79,.4);
+  border-radius: 8px;
+  padding: .6em .9em;
+  margin: 1em 0;
+  font-size: .9rem;
+}
+
+/* ------------------------- ホーム画面 ------------------------- */
+.home-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.4em;
+}
+@media (max-width: 760px) { .home-grid { grid-template-columns: 1fr; } }
+
+.role-tabs { display: flex; gap: .5em; margin-bottom: 1em; }
+.role-tabs button { flex: 1; background: var(--panel-bg-raised); color: var(--text-muted); }
+.role-tabs button.active { background: var(--blue); color: #05121a; }
+
+/* ------------------------- 手書きキャンバス ------------------------- */
+.canvas-wrap {
+  background: #fff;
+  border-radius: 10px;
+  overflow: hidden;
+  touch-action: none;
+  line-height: 0;
+}
+canvas { display: block; width: 100%; touch-action: none; }
+
+/* ------------------------- 早押しランプ盤 ------------------------- */
+.buzzer-board {
+  display: flex;
+  flex-direction: column;
+  gap: .5em;
+}
+.buzzer-row {
+  display: flex;
+  align-items: center;
+  gap: .8em;
+  background: var(--panel-bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: .6em .9em;
+  position: relative;
+  overflow: hidden;
+}
+.buzzer-row.lit {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 1px var(--gold), 0 0 18px rgba(242,183,5,.35);
+  animation: lamp-flash .5s ease;
+}
+@keyframes lamp-flash {
+  0% { background: var(--gold); }
+  100% { background: var(--panel-bg-raised); }
+}
+.buzzer-rank {
+  font-weight: 900;
+  font-size: 1.3rem;
+  width: 2em;
+  text-align: center;
+  color: var(--gold);
+}
+.buzzer-name { font-weight: 700; flex: 1; }
+.buzzer-time { color: var(--text-muted); font-size: .8rem; font-variant-numeric: tabular-nums; }
+
+/* ------------------------- プレイヤーグリッド(判定者/プロジェクター) ------------------------- */
+.player-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 1em;
+}
+.player-tile {
+  background: var(--panel-bg);
+  border: 2px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  cursor: pointer;
+}
+.player-tile.correct { border-color: var(--green); }
+.player-tile.incorrect { border-color: var(--red); }
+.player-tile .tile-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: .5em .8em;
+  background: var(--panel-bg-raised);
+  font-weight: 700;
+}
+.player-tile .tile-canvas {
+  background: #fff;
+  aspect-ratio: 4 / 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.player-tile .tile-canvas img { width: 100%; height: 100%; object-fit: contain; }
+.player-tile .tile-canvas .empty { color: #bbb; font-size: .85rem; }
+.tile-actions { display: flex; gap: .4em; padding: .5em; }
+.tile-actions button { flex: 1; padding: .4em; font-size: .85rem; }
+.status-dot { width: .6em; height: .6em; border-radius: 50%; background: var(--line); }
+.status-dot.on { background: var(--green); }
+
+/* ------------------------- プロジェクター表示画面 ------------------------- */
+.display-stage {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 1.2em;
+}
+.display-single {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1em;
+}
+.display-single .name-tag {
+  font-size: 2.4rem;
+  font-weight: 900;
+  letter-spacing: .02em;
+}
+.display-single .canvas-wrap { max-width: 90vw; max-height: 70vh; }
+.display-single img { max-width: 90vw; max-height: 65vh; object-fit: contain; }
+
+.buzz-banner {
+  text-align: center;
+  padding: .5em;
+  font-weight: 900;
+  font-size: 1.6rem;
+  color: var(--gold);
+  min-height: 1.6em;
+}
+
+.footer-note {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: .75rem;
+  padding: 1em;
+}

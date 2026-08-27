@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>投影画面 | 早押し・ボードクイズ</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="topbar">
+  <div class="brand">📽 投影画面</div>
+  <div class="room-tag" id="room-tag">-</div>
+</div>
+
+<details class="card" id="arduino-panel" style="margin:1em 1.2em 0;">
+  <summary style="cursor:pointer; font-weight:700;">早押し機（Arduino）を使う場合はこちら（任意・無くても利用できます）</summary>
+  <div style="display:flex; align-items:center; gap:.8em; flex-wrap:wrap; margin-top:.8em;">
+    <button class="secondary" id="btn-arduino-connect">接続する</button>
+    <button class="danger" id="btn-arduino-disconnect">切断</button>
+    <span class="hint" id="arduino-status">未接続</span>
+  </div>
+  <div class="hint" id="arduino-support-warning" style="display:none;">
+    このブラウザ・端末はWeb Serial API未対応のため、Arduino接続機能は使えません
+    （パソコン版のChromeまたはEdgeのみ対応。投影画面そのものは通常どおり使えます）。
+  </div>
+</details>
+
+<div class="buzz-banner" id="buzz-banner"></div>
+
+<div class="display-stage" id="stage">
+  <div class="hint" style="text-align:center;">読み込み中…</div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="js/board-sync.js"></script>
+<script>
+const params = new URLSearchParams(window.location.search);
+const roomName = params.get('room');
+document.getElementById('room-tag').textContent = roomName || '-';
+
+if (!roomName) {
+  document.getElementById('stage').innerHTML = '<div class="error-msg">部屋名が指定されていません。URLに ?room=部屋名 を付けてください。</div>';
+  throw new Error('missing room');
+}
+
+const socket = io();
+let latestState = null;
+let lastBuzzCount = 0;
+
+// 表示画面は「観客」として部屋に入る（判定者・回答者どちらでもない特別な参加）
+socket.on('connect', () => {
+  socket.emit('spectate_room', { roomName }, (res) => {
+    if (res && res.error) {
+      document.getElementById('stage').innerHTML = `<div class="error-msg">${res.error}</div>`;
+    }
+  });
+});
+
+socket.on('room_state', render);
+socket.on('draw_stroke', (data) => {
+  BoardSync.stroke(data.playerId, data);
+  refreshLiveCanvas(data.playerId);
+});
+socket.on('clear_canvas', ({ playerId }) => {
+  BoardSync.clear(playerId);
+  refreshLiveCanvas(playerId);
+});
+socket.on('reset_canvases', () => {
+  if (latestState) latestState.players.forEach(p => BoardSync.clear(p.id));
+  document.getElementById('buzz-banner').textContent = '';
+  lastBuzzCount = 0;
+});
+
+function render(state) {
+  if (!state || state.roomName !== roomName) return;
+  latestState = state;
+  updateBuzzBanner(state);
+
+  const stage = document.getElementById('stage');
+  if (state.display.mode === 'single' && state.display.selectedPlayerId) {
+    const p = state.players.find(pl => pl.id === state.display.selectedPlayerId);
+    if (!p) { renderGrid(state); return; }
+    stage.innerHTML = '';
+    const wrap = document.createElement('div');
+    wrap.className = 'display-single';
+    const nameTag = document.createElement('div');
+    nameTag.className = 'name-tag';
+    nameTag.textContent = p.name;
+    wrap.appendChild(nameTag);
+
+    const boardHolder = document.createElement('div');
+    boardHolder.className = 'canvas-wrap';
+    if (p.imageData) {
+      const img = document.createElement('img');
+      img.src = p.imageData;
+      boardHolder.appendChild(img);
+    } else {
+      const c = BoardSync.getCanvas(p.id);
+      c.style.width = '100%';
+      c.style.height = 'auto';
+      boardHolder.appendChild(c);
+    }
+    wrap.appendChild(boardHolder);
+    stage.innerHTML = '';
+    stage.appendChild(wrap);
+  } else {
+    renderGrid(state);
+  }
+}
+
+function renderGrid(state) {
+  const stage = document.getElementById('stage');
+  stage.innerHTML = '';
+  const grid = document.createElement('div');
+  grid.className = 'player-grid';
+  state.players.forEach((p) => {
+    const tile = document.createElement('div');
+    tile.className = 'player-tile' + (p.correct === true ? ' correct' : p.correct === false ? ' incorrect' : '');
+    const head = document.createElement('div');
+    head.className = 'tile-head';
+    head.innerHTML = `<span>${escapeHtml(p.name)}</span>`;
+    const canvasWrap = document.createElement('div');
+    canvasWrap.className = 'tile-canvas';
+    canvasWrap.dataset.playerId = p.id;
+    if (p.imageData) {
+      const img = document.createElement('img');
+      img.src = p.imageData;
+      canvasWrap.appendChild(img);
+    } else {
+      const c = BoardSync.getCanvas(p.id);
+      c.style.width = '100%';
+      c.style.height = '100%';
+      canvasWrap.appendChild(c);
+    }
+    tile.appendChild(head);
+    tile.appendChild(canvasWrap);
+    grid.appendChild(tile);
+  });
+  stage.appendChild(grid);
+}
+
+function refreshLiveCanvas(playerId) {
+  if (!latestState) return;
+  const p = latestState.players.find(pl => pl.id === playerId);
+  if (!p || p.imageData) return;
+  const wrap = document.querySelector(`.tile-canvas[data-player-id="${playerId}"]`) ||
+               (latestState.display.mode === 'single' && latestState.display.selectedPlayerId === playerId
+                 ? document.querySelector('.display-single .canvas-wrap') : null);
+  if (!wrap) return;
+  if (!wrap.querySelector('canvas')) {
+    wrap.innerHTML = '';
+    const c = BoardSync.getCanvas(playerId);
+    c.style.width = '100%';
+    c.style.height = '100%';
+    wrap.appendChild(c);
+  }
+}
+
+function updateBuzzBanner(state) {
+  const banner = document.getElementById('buzz-banner');
+  if (!state.buzzOrder.length) {
+    banner.textContent = '';
+    lastBuzzCount = 0;
+    return;
+  }
+  if (state.buzzOrder.length !== lastBuzzCount) {
+    lastBuzzCount = state.buzzOrder.length;
+    const top = state.buzzOrder[0];
+    banner.textContent = `⚡ ${top.name} が早押し！`;
+    banner.style.animation = 'none';
+    void banner.offsetWidth;
+    banner.style.animation = 'lamp-flash .6s ease';
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+// --- Arduino早押し機との接続 (Web Serial API) ---
+// このAPIはPC版Chrome/Edgeでのみ動作し、かつ「セキュアコンテキスト」
+// （https:// のページ、または http://localhost）でのみ使用できます。
+// ローカルネットワークで http://<IPアドレス>:3000 のように開いている場合は
+// 動作しないため、投影PC自身では http://localhost:3000/... で開いてください。
+let serialPort = null;
+let serialReader = null;
+let serialLineBuffer = '';
+
+if (!('serial' in navigator)) {
+  document.getElementById('arduino-support-warning').style.display = 'block';
+  document.getElementById('btn-arduino-connect').disabled = true;
+}
+
+document.getElementById('btn-arduino-connect').onclick = async () => {
+  if (!('serial' in navigator)) return;
+  try {
+    serialPort = await navigator.serial.requestPort();
+    await serialPort.open({ baudRate: 9600 });
+    document.getElementById('arduino-status').textContent = '接続しました。ボタンが押されるのを待っています…';
+    readSerialLoop();
+  } catch (e) {
+    document.getElementById('arduino-status').textContent = '接続失敗: ' + e.message;
+  }
+};
+
+document.getElementById('btn-arduino-disconnect').onclick = async () => {
+  try { if (serialReader) await serialReader.cancel(); } catch (e) {}
+  try { if (serialPort) await serialPort.close(); } catch (e) {}
+  serialPort = null;
+  serialReader = null;
+  document.getElementById('arduino-status').textContent = '切断しました';
+};
+
+async function readSerialLoop() {
+  const textDecoder = new TextDecoderStream();
+  serialPort.readable.pipeTo(textDecoder.writable);
+  const reader = textDecoder.readable.getReader();
+  serialReader = reader;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      serialLineBuffer += value;
+      let idx;
+      while ((idx = serialLineBuffer.indexOf('\n')) >= 0) {
+        const line = serialLineBuffer.slice(0, idx).trim();
+        serialLineBuffer = serialLineBuffer.slice(idx + 1);
+        handleSerialLine(line);
+      }
+    }
+  } catch (e) {
+    document.getElementById('arduino-status').textContent = '読み取りエラー: ' + e.message;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function handleSerialLine(line) {
+  const m = line.match(/BUZZ,(\d+)/i);
+  if (!m) return;
+  const buzzerId = Number(m[1]);
+  socket.emit('client_buzz', { buzzerId });
+  document.getElementById('arduino-status').textContent = `#${buzzerId} を受信 (${new Date().toLocaleTimeString()})`;
+}
+</script>
+</body>
+</html>

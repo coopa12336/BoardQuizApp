@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>回答者 | 早押し・ボードクイズ</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="topbar">
+  <div class="brand" id="player-name-tag">回答者</div>
+  <div class="room-tag" id="room-tag">-</div>
+</div>
+
+<div class="wrap">
+  <div id="error-area"></div>
+
+  <div id="board-area" style="display:none;">
+    <div class="card" style="margin-bottom:1em;">
+      <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:.6em;">
+        <div id="phase-label" class="hint">出題を待っています…</div>
+        <div style="display:flex; gap:.5em;">
+          <button class="secondary" id="btn-clear">消す</button>
+          <button class="gold" id="btn-submit">回答を確定する</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="canvas-wrap card" style="padding:0;">
+      <canvas id="board" width="1000" height="700"></canvas>
+    </div>
+
+    <div class="hint" id="submit-status" style="margin-top:.8em;"></div>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const params = new URLSearchParams(window.location.search);
+const roomName = params.get('room');
+const password = params.get('password') || '';
+const playerName = params.get('name');
+const buzzerId = params.get('buzzerId') || '';
+
+if (!roomName || !playerName) {
+  document.getElementById('error-area').innerHTML = '<div class="error-msg">部屋情報が不足しています。ホームからやり直してください。</div>';
+  throw new Error('missing params');
+}
+
+document.getElementById('player-name-tag').textContent = playerName;
+document.getElementById('room-tag').textContent = roomName;
+
+const socket = io();
+const canvas = document.getElementById('board');
+const ctx = canvas.getContext('2d');
+ctx.fillStyle = '#fff';
+ctx.fillRect(0, 0, canvas.width, canvas.height);
+ctx.strokeStyle = '#111';
+ctx.lineWidth = 6;
+ctx.lineCap = 'round';
+ctx.lineJoin = 'round';
+
+let drawing = false;
+let locked = false;
+
+function normPoint(evt) {
+  const rect = canvas.getBoundingClientRect();
+  const cx = (evt.touches ? evt.touches[0].clientX : evt.clientX) - rect.left;
+  const cy = (evt.touches ? evt.touches[0].clientY : evt.clientY) - rect.top;
+  return { x: cx / rect.width, y: cy / rect.height };
+}
+
+function toCanvasXY(p) {
+  return { x: p.x * canvas.width, y: p.y * canvas.height };
+}
+
+function startDraw(evt) {
+  if (locked) return;
+  drawing = true;
+  const p = normPoint(evt);
+  const c = toCanvasXY(p);
+  ctx.beginPath();
+  ctx.moveTo(c.x, c.y);
+  socket.emit('draw_stroke', { phase: 'start', x: p.x, y: p.y });
+  evt.preventDefault();
+}
+function moveDraw(evt) {
+  if (!drawing || locked) return;
+  const p = normPoint(evt);
+  const c = toCanvasXY(p);
+  ctx.lineTo(c.x, c.y);
+  ctx.stroke();
+  socket.emit('draw_stroke', { phase: 'move', x: p.x, y: p.y });
+  evt.preventDefault();
+}
+function endDraw(evt) {
+  if (!drawing) return;
+  drawing = false;
+  socket.emit('draw_stroke', { phase: 'end' });
+}
+
+canvas.addEventListener('mousedown', startDraw);
+canvas.addEventListener('mousemove', moveDraw);
+window.addEventListener('mouseup', endDraw);
+canvas.addEventListener('touchstart', startDraw, { passive: false });
+canvas.addEventListener('touchmove', moveDraw, { passive: false });
+canvas.addEventListener('touchend', endDraw);
+
+function clearCanvas() {
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+}
+
+document.getElementById('btn-clear').onclick = () => {
+  if (locked) return;
+  clearCanvas();
+  socket.emit('clear_canvas');
+};
+
+document.getElementById('btn-submit').onclick = () => {
+  const imageData = canvas.toDataURL('image/png');
+  socket.emit('submit_answer', { imageData });
+  document.getElementById('submit-status').textContent = '回答を送信しました。判定者の指示を待ってください。';
+};
+
+socket.on('connect', () => {
+  socket.emit('join_room', {
+    roomName, password, role: 'player', playerName,
+    buzzerId: buzzerId !== '' ? buzzerId : undefined
+  }, (res) => {
+    if (res.error) {
+      document.getElementById('error-area').innerHTML = `<div class="error-msg">${res.error}</div>`;
+      return;
+    }
+    document.getElementById('board-area').style.display = 'block';
+    applyState(res.state);
+  });
+});
+
+socket.on('room_state', applyState);
+
+function applyState(state) {
+  if (!state) return;
+  const label = document.getElementById('phase-label');
+  if (state.phase === 'writing') {
+    locked = false;
+    label.textContent = '回答中… 制限時間内にボードに記入してください';
+  } else if (state.phase === 'locked') {
+    locked = true;
+    label.textContent = '回答時間が終了しました';
+  } else {
+    label.textContent = '出題を待っています…';
+  }
+}
+
+socket.on('reset_canvases', () => {
+  clearCanvas();
+  locked = false;
+  document.getElementById('submit-status').textContent = '';
+});
+</script>
+</body>
+</html>
