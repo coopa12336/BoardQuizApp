@@ -26,6 +26,7 @@
 </details>
 
 <div class="buzz-banner" id="buzz-banner"></div>
+<div id="timer-display" style="text-align:center; font-size:3rem; font-weight:900; font-variant-numeric:tabular-nums; color:var(--gold); min-height:1.2em;"></div>
 
 <div class="display-stage" id="stage">
   <div class="hint" style="text-align:center;">読み込み中…</div>
@@ -33,6 +34,7 @@
 
 <script src="/socket.io/socket.io.js"></script>
 <script src="js/board-sync.js"></script>
+<script src="js/timer-sync.js"></script>
 <script>
 const params = new URLSearchParams(window.location.search);
 const roomName = params.get('room');
@@ -71,10 +73,24 @@ socket.on('reset_canvases', () => {
   lastBuzzCount = 0;
 });
 
+// 早押しで押した順位(1着=1, 2着=2, ...押していなければ0)に対して、
+// 判定者が設定した演出('flash'=点滅 / 'light'=点灯 / 'none'=なし)を割り当てる
+function getBuzzEffectClass(state, playerId) {
+  const idx = (state.buzzOrder || []).findIndex((b) => b.playerId === playerId);
+  if (idx < 0) return null;
+  const rank = idx + 1;
+  const cfg = state.buzzEffect || { first: 'flash', others: 'light' };
+  const effect = rank === 1 ? cfg.first : cfg.others;
+  if (effect === 'flash') return 'buzz-flash';
+  if (effect === 'light') return 'buzz-light';
+  return null;
+}
+
 function render(state) {
   if (!state || state.roomName !== roomName) return;
   latestState = state;
   updateBuzzBanner(state);
+  renderTimer(state.timer);
 
   const stage = document.getElementById('stage');
   if (state.display.mode === 'single' && state.display.selectedPlayerId) {
@@ -83,13 +99,11 @@ function render(state) {
     stage.innerHTML = '';
     const wrap = document.createElement('div');
     wrap.className = 'display-single';
-    const nameTag = document.createElement('div');
-    nameTag.className = 'name-tag';
-    nameTag.textContent = p.name;
-    wrap.appendChild(nameTag);
 
     const boardHolder = document.createElement('div');
     boardHolder.className = 'canvas-wrap';
+    const effectClass = getBuzzEffectClass(state, p.id);
+    if (effectClass) boardHolder.classList.add(effectClass);
     if (p.imageData) {
       const img = document.createElement('img');
       img.src = p.imageData;
@@ -101,6 +115,17 @@ function render(state) {
       boardHolder.appendChild(c);
     }
     wrap.appendChild(boardHolder);
+
+    const nameTag = document.createElement('div');
+    nameTag.className = 'name-tag';
+    nameTag.textContent = p.name;
+    wrap.appendChild(nameTag);
+
+    const scoreTag = document.createElement('div');
+    scoreTag.style.cssText = 'font-size:1.4rem; font-weight:900; color:var(--gold);';
+    scoreTag.textContent = `${p.score || 0} 点`;
+    wrap.appendChild(scoreTag);
+
     stage.innerHTML = '';
     stage.appendChild(wrap);
   } else {
@@ -116,12 +141,11 @@ function renderGrid(state) {
   state.players.forEach((p) => {
     const tile = document.createElement('div');
     tile.className = 'player-tile' + (p.correct === true ? ' correct' : p.correct === false ? ' incorrect' : '');
-    const head = document.createElement('div');
-    head.className = 'tile-head';
-    head.innerHTML = `<span>${escapeHtml(p.name)}</span>`;
     const canvasWrap = document.createElement('div');
     canvasWrap.className = 'tile-canvas';
     canvasWrap.dataset.playerId = p.id;
+    const effectClass = getBuzzEffectClass(state, p.id);
+    if (effectClass) canvasWrap.classList.add(effectClass);
     if (p.imageData) {
       const img = document.createElement('img');
       img.src = p.imageData;
@@ -132,8 +156,11 @@ function renderGrid(state) {
       c.style.height = '100%';
       canvasWrap.appendChild(c);
     }
-    tile.appendChild(head);
+    const foot = document.createElement('div');
+    foot.className = 'tile-head tile-foot';
+    foot.innerHTML = `<span>${escapeHtml(p.name)}</span><span style="color:var(--gold); font-weight:900;">${p.score || 0}点</span>`;
     tile.appendChild(canvasWrap);
+    tile.appendChild(foot);
     grid.appendChild(tile);
   });
   stage.appendChild(grid);
@@ -154,6 +181,18 @@ function refreshLiveCanvas(playerId) {
     c.style.height = '100%';
     wrap.appendChild(c);
   }
+}
+
+function renderTimer(timer) {
+  const el = document.getElementById('timer-display');
+  if (!timer || !timer.endsAt) {
+    TimerSync.stop();
+    el.textContent = '';
+    return;
+  }
+  TimerSync.start(timer.endsAt, (sec) => {
+    el.textContent = TimerSync.format(sec);
+  });
 }
 
 function updateBuzzBanner(state) {
@@ -237,11 +276,23 @@ async function readSerialLoop() {
 }
 
 function handleSerialLine(line) {
-  const m = line.match(/BUZZ,(\d+)/i);
-  if (!m) return;
-  const buzzerId = Number(m[1]);
+  const buzzerId = parseBuzzerIdFromLine(line);
+  if (buzzerId === null) return;
   socket.emit('client_buzz', { buzzerId });
   document.getElementById('arduino-status').textContent = `#${buzzerId} を受信 (${new Date().toLocaleTimeString()})`;
+}
+
+// 対応フォーマット:
+//  1) RP2040マイコンボードキット早押し機(10~12端子早押し機)形式:
+//     "ButtonRank<着順>:<ボタン番号>" 例: "ButtonRank1:3" → 3番のボタンが1着
+//  2) 自作の簡易早押し機形式: "BUZZ,<ボタン番号>" 例: "BUZZ,3"
+// どちらの形式が届いても自動判別して処理します。
+function parseBuzzerIdFromLine(line) {
+  let m = line.match(/ButtonRank\d+:(\d+)/i);
+  if (m) return Number(m[1]);
+  m = line.match(/BUZZ,(\d+)/i);
+  if (m) return Number(m[1]);
+  return null;
 }
 </script>
 </body>

@@ -30,9 +30,32 @@ app.use(express.static(path.join(__dirname, 'public')));
 //   phase: 'idle' | 'writing' | 'locked',
 //   buzzOrder: [{ buzzerId, playerId, name, ts }],
 //   buzzAccepting: boolean,
-//   display: { mode: 'grid' | 'single', selectedPlayerId: string|null }
+//   display: { mode: 'grid' | 'single', selectedPlayerId: string|null },
+//   scoreRules: [{ id, rank: number|null, correct: boolean, points: number, label }],
+//   buzzEffect: { first: 'flash'|'light'|'none', others: 'flash'|'light'|'none' },
+//   timer: { durationSec: number, remainingMs: number, running: boolean, endsAt: number|null },
+//   _timerHandle: NodeJS.Timeout|null (公開状態には含めない)
 // }
 const rooms = new Map();
+
+// 得点ルールの初期値（6パターン）。rank:null は「ボタンを押さずに解答」を表す。
+function defaultScoreRules() {
+  return [
+    { id: 'rank-1-correct',   rank: 1,    correct: true,  points: 10, label: '押して正解（1着）' },
+    { id: 'rank-1-incorrect', rank: 1,    correct: false, points: -5, label: '押して不正解（1着）' },
+    { id: 'rank-2-correct',   rank: 2,    correct: true,  points: 5,  label: '押して正解（2着）' },
+    { id: 'rank-2-incorrect', rank: 2,    correct: false, points: -3, label: '押して不正解（2着）' },
+    { id: 'nobuzz-correct',   rank: null, correct: true,  points: 5,  label: '押さずに正解' },
+    { id: 'nobuzz-incorrect', rank: null, correct: false, points: 0,  label: '押さずに不正解' }
+  ];
+}
+
+// 投影画面での早押し演出の初期値。「1着」と「2着以降」をそれぞれ設定できる。
+function defaultBuzzEffect() {
+  return { first: 'flash', others: 'light' };
+}
+
+const VALID_BUZZ_EFFECTS = new Set(['flash', 'light', 'none']);
 
 function getRoomPublicState(roomName) {
   const room = rooms.get(roomName);
@@ -44,13 +67,19 @@ function getRoomPublicState(roomName) {
     buzzAccepting: room.buzzAccepting,
     display: room.display,
     hasJudge: !!room.judgeSocketId,
+    scoreRules: room.scoreRules,
+    buzzEffect: room.buzzEffect,
+    timer: room.timer ? { durationSec: room.timer.durationSec, endsAt: room.timer.endsAt } : null,
     players: Array.from(room.players.entries()).map(([id, p]) => ({
       id,
       name: p.name,
       buzzerId: p.buzzerId,
       hasSubmitted: p.hasSubmitted,
       imageData: p.imageData,
-      correct: p.correct
+      correct: p.correct,
+      score: p.score || 0,
+      lastDelta: p.lastDelta || 0,
+      locked: !!p.locked
     }))
   };
 }
@@ -58,6 +87,24 @@ function getRoomPublicState(roomName) {
 function broadcastRoomState(roomName) {
   const state = getRoomPublicState(roomName);
   if (state) io.to(roomName).emit('room_state', state);
+}
+
+// 全員のボードを一括ロックする（「回答をロックする」ボタン・タイマー終了時に共通で使用）
+function lockAllPlayers(room) {
+  room.phase = 'locked';
+  room.buzzAccepting = false;
+  for (const p of room.players.values()) {
+    p.locked = true;
+  }
+}
+
+// タイマーを止める（タイマー終了・手動停止・次の問題への移行時に共通で使用）
+function clearRoomTimer(room) {
+  if (room._timerHandle) {
+    clearTimeout(room._timerHandle);
+    room._timerHandle = null;
+  }
+  room.timer = null;
 }
 
 // ------------------------------------------------------------------
@@ -114,7 +161,11 @@ io.on('connection', (socket) => {
       phase: 'idle',
       buzzOrder: [],
       buzzAccepting: false,
-      display: { mode: 'grid', selectedPlayerId: null }
+      display: { mode: 'grid', selectedPlayerId: null },
+      scoreRules: defaultScoreRules(),
+      buzzEffect: defaultBuzzEffect(),
+      timer: null,
+      _timerHandle: null
     });
     cb({ ok: true });
   });
@@ -134,7 +185,10 @@ io.on('connection', (socket) => {
         buzzerId: buzzerId !== undefined && buzzerId !== '' ? Number(buzzerId) : null,
         hasSubmitted: false,
         imageData: null,
-        correct: null
+        correct: null,
+        score: 0,
+        lastDelta: 0,
+        locked: room.phase !== 'writing'
       });
       role = 'player';
     }
@@ -189,6 +243,7 @@ io.on('connection', (socket) => {
     if (role !== 'judge' || !joinedRoom) return;
     const room = rooms.get(joinedRoom);
     if (!room) return;
+    clearRoomTimer(room);
     room.phase = 'writing';
     room.buzzOrder = [];
     room.buzzAccepting = true;
@@ -196,6 +251,8 @@ io.on('connection', (socket) => {
       p.hasSubmitted = false;
       p.imageData = null;
       p.correct = null;
+      p.lastDelta = 0; // 前の問題の加減点効果はリセット（累計スコア自体は維持）
+      p.locked = false; // 個別ロックも含めて全員分を解除
     }
     io.to(joinedRoom).emit('reset_canvases');
     broadcastRoomState(joinedRoom);
@@ -205,16 +262,135 @@ io.on('connection', (socket) => {
     if (role !== 'judge' || !joinedRoom) return;
     const room = rooms.get(joinedRoom);
     if (!room) return;
-    room.phase = 'locked';
-    room.buzzAccepting = false;
+    clearRoomTimer(room);
+    lockAllPlayers(room);
     broadcastRoomState(joinedRoom);
   });
 
+  // 回答者ごとに個別でロック/ロック解除する
+  socket.on('judge_set_player_lock', ({ playerId, locked }) => {
+    if (role !== 'judge' || !joinedRoom) return;
+    const room = rooms.get(joinedRoom);
+    if (!room || !room.players.has(playerId)) return;
+    room.players.get(playerId).locked = !!locked;
+    broadcastRoomState(joinedRoom);
+  });
+
+  // 制限時間タイマーを開始する。時間になると自動で全員をロックする。
+  socket.on('judge_start_timer', ({ seconds }) => {
+    if (role !== 'judge' || !joinedRoom) return;
+    const room = rooms.get(joinedRoom);
+    if (!room) return;
+    const durationSec = Math.round(Number(seconds));
+    if (!Number.isFinite(durationSec) || durationSec <= 0 || durationSec > 3600) return;
+
+    clearRoomTimer(room);
+    const endsAt = Date.now() + durationSec * 1000;
+    room.timer = { durationSec, endsAt };
+    room._timerHandle = setTimeout(() => {
+      const r = rooms.get(joinedRoom);
+      if (!r) return;
+      r._timerHandle = null;
+      r.timer = null;
+      lockAllPlayers(r);
+      broadcastRoomState(joinedRoom);
+    }, durationSec * 1000);
+
+    broadcastRoomState(joinedRoom);
+  });
+
+  // タイマーを手動で停止する（自動ロックは行わない）
+  socket.on('judge_stop_timer', () => {
+    if (role !== 'judge' || !joinedRoom) return;
+    const room = rooms.get(joinedRoom);
+    if (!room) return;
+    clearRoomTimer(room);
+    broadcastRoomState(joinedRoom);
+  });
+
+  // 正誤判定。押した順位（押していなければ「押さず」扱い）と正誤の組み合わせから
+  // scoreRulesを引き当てて自動で加減点する。判定をやり直した場合は前回の加減点分を
+  // 打ち消してから再計算するので、何度押し直しても累計スコアはズレない。
   socket.on('judge_mark', ({ playerId, correct }) => {
     if (role !== 'judge' || !joinedRoom) return;
     const room = rooms.get(joinedRoom);
     if (!room || !room.players.has(playerId)) return;
-    room.players.get(playerId).correct = correct;
+    const player = room.players.get(playerId);
+
+    const buzzIndex = room.buzzOrder.findIndex((b) => b.playerId === playerId);
+    const rank = buzzIndex >= 0 ? buzzIndex + 1 : null;
+    const rule = room.scoreRules.find((r) => r.rank === rank && r.correct === correct);
+    const delta = rule ? rule.points : 0;
+
+    player.score = (player.score || 0) - (player.lastDelta || 0) + delta;
+    player.lastDelta = delta;
+    player.correct = correct;
+
+    broadcastRoomState(joinedRoom);
+  });
+
+  // 得点ルールの編集（判定者画面から数値・ラベルをまとめて上書き保存）
+  socket.on('judge_update_score_rules', ({ rules }) => {
+    if (role !== 'judge' || !joinedRoom) return;
+    const room = rooms.get(joinedRoom);
+    if (!room || !Array.isArray(rules)) return;
+    room.scoreRules = rules
+      .filter((r) => r && typeof r.id === 'string')
+      .map((r) => ({
+        id: r.id,
+        rank: r.rank === null || r.rank === undefined || r.rank === '' ? null : Number(r.rank),
+        correct: !!r.correct,
+        points: Number(r.points) || 0,
+        label: String(r.label || '').slice(0, 60)
+      }));
+    broadcastRoomState(joinedRoom);
+  });
+
+  // 新しい順位のルール（正解/不正解の2行）を追加する
+  socket.on('judge_add_rank_rule', ({ rank }) => {
+    if (role !== 'judge' || !joinedRoom) return;
+    const room = rooms.get(joinedRoom);
+    if (!room) return;
+    const n = Number(rank);
+    if (!Number.isInteger(n) || n < 1 || n > 99) return;
+    const existing = new Set(room.scoreRules.map((r) => r.id));
+    if (!existing.has(`rank-${n}-correct`)) {
+      room.scoreRules.push({ id: `rank-${n}-correct`, rank: n, correct: true, points: 0, label: `押して正解（${n}着）` });
+    }
+    if (!existing.has(`rank-${n}-incorrect`)) {
+      room.scoreRules.push({ id: `rank-${n}-incorrect`, rank: n, correct: false, points: 0, label: `押して不正解（${n}着）` });
+    }
+    broadcastRoomState(joinedRoom);
+  });
+
+  socket.on('judge_remove_score_rule', ({ id }) => {
+    if (role !== 'judge' || !joinedRoom) return;
+    const room = rooms.get(joinedRoom);
+    if (!room) return;
+    room.scoreRules = room.scoreRules.filter((r) => r.id !== id);
+    broadcastRoomState(joinedRoom);
+  });
+
+  // 全員のスコアを0に戻す（問題ごとのリセットとは別操作）
+  socket.on('judge_reset_scores', () => {
+    if (role !== 'judge' || !joinedRoom) return;
+    const room = rooms.get(joinedRoom);
+    if (!room) return;
+    for (const p of room.players.values()) {
+      p.score = 0;
+      p.lastDelta = 0;
+    }
+    broadcastRoomState(joinedRoom);
+  });
+
+  // 投影画面での早押し演出（1着/2着以降それぞれ「点滅」「点灯」「なし」）の設定
+  socket.on('judge_update_buzz_effect', ({ config }) => {
+    if (role !== 'judge' || !joinedRoom) return;
+    const room = rooms.get(joinedRoom);
+    if (!room || !config) return;
+    const first = VALID_BUZZ_EFFECTS.has(config.first) ? config.first : room.buzzEffect.first;
+    const others = VALID_BUZZ_EFFECTS.has(config.others) ? config.others : room.buzzEffect.others;
+    room.buzzEffect = { first, others };
     broadcastRoomState(joinedRoom);
   });
 

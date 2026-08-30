@@ -21,10 +21,24 @@
       <h3 style="margin-bottom:.8em;">進行操作</h3>
       <div style="display:flex; gap:.6em; flex-wrap:wrap;">
         <button class="gold" id="btn-new-question">次の問題へ（ボード・早押しをリセット）</button>
-        <button class="secondary" id="btn-lock">回答をロックする</button>
+        <button class="secondary" id="btn-lock">回答をロックする（全員）</button>
         <button class="secondary" id="btn-reset-buzz">早押しだけリセット</button>
       </div>
       <div class="hint" id="phase-status" style="margin-top:.7em;"></div>
+    </div>
+
+    <div class="card" style="margin-bottom:1em;">
+      <h3 style="margin-bottom:.6em;">制限時間タイマー</h3>
+      <p class="hint">時間になると自動的に全員の回答をロックします（下の「回答をロックする」を押すのと同じ動作です）。</p>
+      <div style="display:flex; gap:.6em; align-items:end; flex-wrap:wrap; margin-top:.8em;">
+        <div class="field" style="margin:0;">
+          <label>秒数</label>
+          <input id="timer-seconds-input" type="number" min="1" max="3600" value="30" style="width:6em;">
+        </div>
+        <button id="btn-timer-start">タイマー開始</button>
+        <button class="danger" id="btn-timer-stop">タイマー停止</button>
+        <div id="timer-display" style="font-size:1.8rem; font-weight:900; font-variant-numeric:tabular-nums; color:var(--gold);"></div>
+      </div>
     </div>
 
     <div class="card" style="margin-bottom:1em;">
@@ -43,11 +57,60 @@
     </div>
 
     <div class="card" style="margin-bottom:1em;">
+      <h3 style="margin-bottom:.6em;">投影画面での早押し演出</h3>
+      <p class="hint">早押し機が押された時、投影画面上でその人のボード回答部分をどう強調するかを設定します。</p>
+      <div style="display:flex; gap:1.2em; flex-wrap:wrap; margin-top:.8em;">
+        <div class="field" style="margin:0;">
+          <label>1着</label>
+          <select id="buzz-effect-first">
+            <option value="flash">点滅させる</option>
+            <option value="light">点灯させる（点滅しない）</option>
+            <option value="none">何もしない</option>
+          </select>
+        </div>
+        <div class="field" style="margin:0;">
+          <label>2着以降</label>
+          <select id="buzz-effect-others">
+            <option value="flash">点滅させる</option>
+            <option value="light">点灯させる（点滅しない）</option>
+            <option value="none">何もしない</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:1em;">
       <h3 style="margin-bottom:.6em;">早押し機（Arduino）テスト（任意）</h3>
       <p class="hint">早押し機を使わない場合、このカードは無視して構いません。ボード解答だけで進行できます。
         実機のArduinoは<strong>投影画面（display.html）</strong>のブラウザから接続します。
         ここでは実機なしで早押し動作を確認できます。</p>
       <div id="simulate-buttons" style="display:flex; gap:.4em; margin-top:.6em; flex-wrap:wrap;"></div>
+    </div>
+
+    <div class="card" style="margin-bottom:1em;">
+      <h3 style="margin-bottom:.6em;">得点ルール設定</h3>
+      <p class="hint">「正解/不正解」ボタンを押した時、回答者がボタンを押していた順位（押していなければ「押さず」）に応じて、
+        ここで設定した点数が自動で加減されます。数値はいつでも変更でき、変更するとその場で反映されます。</p>
+      <table style="width:100%; border-collapse:collapse; margin-top:.8em;" id="score-rules-table">
+        <thead>
+          <tr style="text-align:left; color:var(--text-muted); font-size:.85rem;">
+            <th style="padding:.3em .5em;">条件</th>
+            <th style="padding:.3em .5em; width:8em;">点数</th>
+            <th style="padding:.3em .5em; width:3em;"></th>
+          </tr>
+        </thead>
+        <tbody id="score-rules-body"></tbody>
+      </table>
+      <div style="display:flex; gap:.6em; align-items:end; margin-top:1em; flex-wrap:wrap;">
+        <div class="field" style="margin:0;">
+          <label>順位を指定してルールを追加</label>
+          <input id="new-rank-input" type="number" min="3" max="99" placeholder="例: 3" style="width:6em;">
+        </div>
+        <button class="secondary" id="btn-add-rank">この順位の正解/不正解ルールを追加</button>
+      </div>
+      <div style="margin-top:1em;">
+        <button class="danger" id="btn-reset-scores">全員のスコアを0にリセット</button>
+      </div>
     </div>
 
     <div class="card">
@@ -60,6 +123,7 @@
 
 <script src="/socket.io/socket.io.js"></script>
 <script src="js/board-sync.js"></script>
+<script src="js/timer-sync.js"></script>
 <script>
 const params = new URLSearchParams(window.location.search);
 const roomName = params.get('room');
@@ -104,6 +168,25 @@ document.getElementById('btn-lock').onclick = () => socket.emit('judge_lock');
 document.getElementById('btn-reset-buzz').onclick = () => socket.emit('judge_reset_buzzer');
 document.getElementById('btn-display-grid').onclick = () => socket.emit('judge_set_display', { mode: 'grid' });
 
+document.getElementById('btn-timer-start').onclick = () => {
+  const seconds = Number(document.getElementById('timer-seconds-input').value);
+  if (!Number.isFinite(seconds) || seconds <= 0) { alert('1以上の秒数を入力してください'); return; }
+  socket.emit('judge_start_timer', { seconds });
+};
+document.getElementById('btn-timer-stop').onclick = () => socket.emit('judge_stop_timer');
+
+function renderTimer(timer) {
+  const el = document.getElementById('timer-display');
+  if (!timer || !timer.endsAt) {
+    TimerSync.stop();
+    el.textContent = '';
+    return;
+  }
+  TimerSync.start(timer.endsAt, (sec) => {
+    el.textContent = TimerSync.format(sec);
+  });
+}
+
 function render(state) {
   if (!state) return;
   latestState = state;
@@ -135,7 +218,7 @@ function render(state) {
 
     const head = document.createElement('div');
     head.className = 'tile-head';
-    head.innerHTML = `<span>${escapeHtml(p.name)}</span><span class="status-dot ${p.hasSubmitted ? 'on' : ''}"></span>`;
+    head.innerHTML = `<span>${escapeHtml(p.name)} <span style="color:var(--gold); font-weight:900;">${p.score || 0}点</span></span><span style="display:flex; align-items:center; gap:.4em;"><span title="${p.locked ? 'ロック中' : '記入可能'}">${p.locked ? '🔒' : '✏️'}</span><span class="status-dot ${p.hasSubmitted ? 'on' : ''}"></span></span>`;
 
     const canvasWrap = document.createElement('div');
     canvasWrap.className = 'tile-canvas';
@@ -161,8 +244,13 @@ function render(state) {
     ngBtn.textContent = '不正解';
     ngBtn.className = 'danger';
     ngBtn.onclick = () => socket.emit('judge_mark', { playerId: p.id, correct: false });
+    const lockBtn = document.createElement('button');
+    lockBtn.textContent = p.locked ? '🔓 ロック解除' : '🔒 ロックする';
+    lockBtn.className = 'secondary';
+    lockBtn.onclick = () => socket.emit('judge_set_player_lock', { playerId: p.id, locked: !p.locked });
     actions.appendChild(okBtn);
     actions.appendChild(ngBtn);
+    actions.appendChild(lockBtn);
 
     tile.appendChild(head);
     tile.appendChild(canvasWrap);
@@ -173,7 +261,101 @@ function render(state) {
     };
     grid.appendChild(tile);
   });
+
+  renderScoreRules(state.scoreRules || []);
+  renderBuzzEffectConfig(state.buzzEffect);
+  renderTimer(state.timer);
 }
+
+// --- 投影画面での早押し演出設定 ---
+let buzzEffectSelectsBound = false;
+function renderBuzzEffectConfig(config) {
+  if (!config) return;
+  const firstSel = document.getElementById('buzz-effect-first');
+  const othersSel = document.getElementById('buzz-effect-others');
+  if (document.activeElement !== firstSel) firstSel.value = config.first;
+  if (document.activeElement !== othersSel) othersSel.value = config.others;
+
+  if (!buzzEffectSelectsBound) {
+    buzzEffectSelectsBound = true;
+    const emitUpdate = () => {
+      socket.emit('judge_update_buzz_effect', {
+        config: { first: firstSel.value, others: othersSel.value }
+      });
+    };
+    firstSel.onchange = emitUpdate;
+    othersSel.onchange = emitUpdate;
+  }
+}
+
+// --- 得点ルール編集 ---
+function rankLabel(rank) {
+  return rank === null ? '押さずに解答' : `押して${rank}着`;
+}
+
+function renderScoreRules(rules) {
+  // 表示順: 押さず → 1着 → 2着 → … 、各順位内で 正解→不正解
+  const sorted = [...rules].sort((a, b) => {
+    const ra = a.rank === null ? -1 : a.rank;
+    const rb = b.rank === null ? -1 : b.rank;
+    if (ra !== rb) return ra - rb;
+    return (a.correct === b.correct) ? 0 : (a.correct ? -1 : 1);
+  });
+
+  const body = document.getElementById('score-rules-body');
+  body.innerHTML = '';
+  sorted.forEach((rule) => {
+    const tr = document.createElement('tr');
+    tr.style.borderTop = '1px solid var(--line)';
+
+    const condTd = document.createElement('td');
+    condTd.style.padding = '.4em .5em';
+    condTd.textContent = `${rankLabel(rule.rank)} × ${rule.correct ? '正解' : '不正解'}`;
+
+    const pointTd = document.createElement('td');
+    pointTd.style.padding = '.4em .5em';
+    const pointInput = document.createElement('input');
+    pointInput.type = 'number';
+    pointInput.value = rule.points;
+    pointInput.style.width = '5.5em';
+    pointInput.onchange = () => updateRulePoints(rule.id, pointInput.value);
+    pointTd.appendChild(pointInput);
+
+    const delTd = document.createElement('td');
+    delTd.style.padding = '.4em .5em';
+    const delBtn = document.createElement('button');
+    delBtn.className = 'danger';
+    delBtn.textContent = '×';
+    delBtn.style.padding = '.2em .6em';
+    delBtn.onclick = () => socket.emit('judge_remove_score_rule', { id: rule.id });
+    delTd.appendChild(delBtn);
+
+    tr.appendChild(condTd);
+    tr.appendChild(pointTd);
+    tr.appendChild(delTd);
+    body.appendChild(tr);
+  });
+}
+
+function updateRulePoints(id, newValue) {
+  if (!latestState) return;
+  const rules = latestState.scoreRules.map((r) => r.id === id ? { ...r, points: Number(newValue) || 0 } : r);
+  socket.emit('judge_update_score_rules', { rules });
+}
+
+document.getElementById('btn-add-rank').onclick = () => {
+  const val = document.getElementById('new-rank-input').value;
+  const n = Number(val);
+  if (!Number.isInteger(n) || n < 1) { alert('順位は1以上の整数で入力してください'); return; }
+  socket.emit('judge_add_rank_rule', { rank: n });
+  document.getElementById('new-rank-input').value = '';
+};
+
+document.getElementById('btn-reset-scores').onclick = () => {
+  if (confirm('全員のスコアを0にリセットします。よろしいですか？')) {
+    socket.emit('judge_reset_scores');
+  }
+};
 
 function refreshTileCanvas(playerId) {
   if (!latestState) return;
@@ -196,7 +378,7 @@ function escapeHtml(s) {
 
 // --- 早押しシミュレーター(テスト用) ---
 const simWrap = document.getElementById('simulate-buttons');
-for (let i = 1; i <= 8; i++) {
+for (let i = 1; i <= 10; i++) {
   const b = document.createElement('button');
   b.className = 'secondary';
   b.textContent = `#${i} を押す（テスト）`;

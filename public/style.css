@@ -139,9 +139,11 @@ label { font-size: .85rem; color: var(--text-muted); display: block; margin-bott
   border-radius: 10px;
   overflow: hidden;
   touch-action: none;
-  line-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-canvas { display: block; width: 100%; touch-action: none; }
+canvas { display: block; touch-action: none; }
 
 /* ------------------------- 早押しランプ盤 ------------------------- */
 .buzzer-board {
@@ -204,6 +206,10 @@ canvas { display: block; width: 100%; touch-action: none; }
   background: var(--panel-bg-raised);
   font-weight: 700;
 }
+.player-tile .tile-foot {
+  border-top: 1px solid var(--line);
+  font-size: 1.05rem;
+}
 .player-tile .tile-canvas {
   background: #fff;
   aspect-ratio: 4 / 3;
@@ -213,6 +219,18 @@ canvas { display: block; width: 100%; touch-action: none; }
 }
 .player-tile .tile-canvas img { width: 100%; height: 100%; object-fit: contain; }
 .player-tile .tile-canvas .empty { color: #bbb; font-size: .85rem; }
+
+/* 早押し演出（投影画面）: 該当者のボード部分を点滅/点灯させる */
+.buzz-light {
+  box-shadow: inset 0 0 0 6px var(--gold);
+}
+.buzz-flash {
+  animation: buzz-blink .5s steps(1, end) infinite;
+}
+@keyframes buzz-blink {
+  0%, 49%   { box-shadow: inset 0 0 0 6px var(--gold); }
+  50%, 100% { box-shadow: inset 0 0 0 6px transparent; }
+}
 .tile-actions { display: flex; gap: .4em; padding: .5em; }
 .tile-actions button { flex: 1; padding: .4em; font-size: .85rem; }
 .status-dot { width: .6em; height: .6em; border-radius: 50%; background: var(--line); }
@@ -255,4 +273,26 @@ canvas { display: block; width: 100%; touch-action: none; }
   color: var(--text-muted);
   font-size: .75rem;
   padding: 1em;
+}
+
+/* ------------------------- モーダル（スコア状況など） ------------------------- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, .6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.2em;
+  z-index: 50;
+}
+.modal-card {
+  background: var(--panel-bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.2em;
+  width: 100%;
+  max-width: 420px;
+  max-height: 80vh;
+  overflow-y: auto;
 }
