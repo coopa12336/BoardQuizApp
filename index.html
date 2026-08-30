@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>早押し・ボードクイズ</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="topbar">
+  <div class="brand">🔔 早押し・ボードクイズ</div>
+</div>
+
+<div class="wrap">
+  <div class="home-grid">
+
+    <div class="card">
+      <h2>部屋を作る</h2>
+      <p class="hint">大会の進行役（判定者）が最初に部屋を作成します。</p>
+      <div class="field">
+        <label>部屋名</label>
+        <input id="create-room-name" placeholder="例: 決勝ラウンド">
+      </div>
+      <div class="field">
+        <label>パスワード（任意）</label>
+        <input id="create-room-pass" placeholder="空欄でも作成できます" type="text">
+      </div>
+      <button id="btn-create">部屋を作成する</button>
+      <div id="create-error"></div>
+    </div>
+
+    <div class="card">
+      <h2>部屋に入る</h2>
+      <div class="role-tabs">
+        <button id="tab-judge" class="active" type="button">判定者として入る</button>
+        <button id="tab-player" type="button">回答者として入る</button>
+      </div>
+
+      <div class="field">
+        <label>部屋名</label>
+        <input id="join-room-name" placeholder="部屋名を入力">
+      </div>
+      <div class="field">
+        <label>パスワード</label>
+        <input id="join-room-pass" placeholder="設定されていれば入力" type="text">
+      </div>
+
+      <div id="player-fields">
+        <div class="field">
+          <label>あなたの名前</label>
+          <input id="join-player-name" placeholder="表示される名前">
+        </div>
+        <div class="field">
+          <label>早押しボタン番号（任意・Arduinoを使う参加者だけ入力）</label>
+          <input id="join-buzzer-id" placeholder="例: 1" inputmode="numeric">
+          <div class="hint">早押し機を使わない・持っていない場合は空欄のままでOKです。ボードへの手書き解答だけで参加できます。</div>
+        </div>
+      </div>
+
+      <button id="btn-join">入室する</button>
+      <div id="join-error"></div>
+    </div>
+
+  </div>
+
+  <div class="card" style="margin-top:1.4em;">
+    <h3>プロジェクター表示画面</h3>
+    <p class="hint">投影用PCでは、入室せずに以下から直接「表示専用画面」を開いてください。</p>
+    <div class="field">
+      <label>部屋名</label>
+      <input id="display-room-name" placeholder="部屋名を入力">
+    </div>
+    <button class="secondary" id="btn-display">表示画面を開く</button>
+  </div>
+</div>
+
+<div class="footer-note">このアプリはローカルネットワーク上での大会運用を想定しています</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const socket = io();
+let currentRole = 'judge';
+
+document.getElementById('tab-judge').onclick = () => setRole('judge');
+document.getElementById('tab-player').onclick = () => setRole('player');
+function setRole(role) {
+  currentRole = role;
+  document.getElementById('tab-judge').classList.toggle('active', role === 'judge');
+  document.getElementById('tab-player').classList.toggle('active', role === 'player');
+  document.getElementById('player-fields').style.display = role === 'player' ? 'block' : 'none';
+}
+
+document.getElementById('btn-create').onclick = () => {
+  const roomName = document.getElementById('create-room-name').value.trim();
+  const password = document.getElementById('create-room-pass').value;
+  const errBox = document.getElementById('create-error');
+  errBox.innerHTML = '';
+  if (!roomName) { errBox.innerHTML = '<div class="error-msg">部屋名を入力してください</div>'; return; }
+  socket.emit('create_room', { roomName, password }, (res) => {
+    if (res.error) { errBox.innerHTML = `<div class="error-msg">${res.error}</div>`; return; }
+    document.getElementById('join-room-name').value = roomName;
+    document.getElementById('join-room-pass').value = password;
+    errBox.innerHTML = '<div class="hint">部屋を作成しました。右のフォームから「判定者として入る」を選んで入室してください。</div>';
+  });
+};
+
+document.getElementById('btn-join').onclick = () => {
+  const roomName = document.getElementById('join-room-name').value.trim();
+  const password = document.getElementById('join-room-pass').value;
+  const errBox = document.getElementById('join-error');
+  errBox.innerHTML = '';
+  if (!roomName) { errBox.innerHTML = '<div class="error-msg">部屋名を入力してください</div>'; return; }
+
+  const params = new URLSearchParams({ room: roomName, password });
+  if (currentRole === 'judge') {
+    window.location.href = `judge.html?${params.toString()}`;
+  } else {
+    const name = document.getElementById('join-player-name').value.trim();
+    const buzzerId = document.getElementById('join-buzzer-id').value.trim();
+    if (!name) { errBox.innerHTML = '<div class="error-msg">名前を入力してください</div>'; return; }
+    params.set('name', name);
+    if (buzzerId) params.set('buzzerId', buzzerId);
+    window.location.href = `player.html?${params.toString()}`;
+  }
+};
+
+document.getElementById('btn-display').onclick = () => {
+  const roomName = document.getElementById('display-room-name').value.trim();
+  if (!roomName) return;
+  window.location.href = `display.html?room=${encodeURIComponent(roomName)}`;
+};
+
+setRole('judge');
+</script>
+</body>
+</html>

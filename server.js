@@ -26,7 +26,8 @@ app.use(express.static(path.join(__dirname, 'public')));
 // rooms.get(roomName) => {
 //   password: string,
 //   judgeSocketId: string|null,
-//   players: Map(socketId => { name, buzzerId, hasSubmitted, imageData, correct, lastActive }),
+//   players: Map(socketId => { name, buzzerId, hasSubmitted, imageData, correct,
+//                               score, lastDelta, locked, revealed }),
 //   phase: 'idle' | 'writing' | 'locked',
 //   buzzOrder: [{ buzzerId, playerId, name, ts }],
 //   buzzAccepting: boolean,
@@ -79,7 +80,8 @@ function getRoomPublicState(roomName) {
       correct: p.correct,
       score: p.score || 0,
       lastDelta: p.lastDelta || 0,
-      locked: !!p.locked
+      locked: !!p.locked,
+      revealed: !!p.revealed
     }))
   };
 }
@@ -188,7 +190,8 @@ io.on('connection', (socket) => {
         correct: null,
         score: 0,
         lastDelta: 0,
-        locked: room.phase !== 'writing'
+        locked: room.phase !== 'writing',
+        revealed: false
       });
       role = 'player';
     }
@@ -253,6 +256,7 @@ io.on('connection', (socket) => {
       p.correct = null;
       p.lastDelta = 0; // 前の問題の加減点効果はリセット（累計スコア自体は維持）
       p.locked = false; // 個別ロックも含めて全員分を解除
+      p.revealed = false; // 投影画面への公開状態もリセット（次の問題は非公開から開始）
     }
     io.to(joinedRoom).emit('reset_canvases');
     broadcastRoomState(joinedRoom);
@@ -273,6 +277,26 @@ io.on('connection', (socket) => {
     const room = rooms.get(joinedRoom);
     if (!room || !room.players.has(playerId)) return;
     room.players.get(playerId).locked = !!locked;
+    broadcastRoomState(joinedRoom);
+  });
+
+  // 投影画面への公開（見せる/見せない）。個別に切り替える。
+  socket.on('judge_set_reveal', ({ playerId, revealed }) => {
+    if (role !== 'judge' || !joinedRoom) return;
+    const room = rooms.get(joinedRoom);
+    if (!room || !room.players.has(playerId)) return;
+    room.players.get(playerId).revealed = !!revealed;
+    broadcastRoomState(joinedRoom);
+  });
+
+  // 投影画面への公開を全員一括で切り替える
+  socket.on('judge_set_reveal_all', ({ revealed }) => {
+    if (role !== 'judge' || !joinedRoom) return;
+    const room = rooms.get(joinedRoom);
+    if (!room) return;
+    for (const p of room.players.values()) {
+      p.revealed = !!revealed;
+    }
     broadcastRoomState(joinedRoom);
   });
 

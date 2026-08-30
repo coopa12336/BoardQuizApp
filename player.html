@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>回答者 | 早押し・ボードクイズ</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="topbar">
+  <div class="brand" id="player-name-tag">回答者</div>
+  <div style="display:flex; align-items:center; gap:.8em;">
+    <button class="secondary" id="btn-open-scoreboard" style="padding:.4em .8em; font-size:.85rem;">
+      🏆 スコア <span id="my-score" style="font-weight:900; color:var(--gold);">0点</span>
+    </button>
+    <div class="room-tag" id="room-tag">-</div>
+  </div>
+</div>
+
+<div id="scoreboard-overlay" class="modal-overlay" style="display:none;">
+  <div class="modal-card">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:.8em;">
+      <h3 style="margin:0;">現在のスコア状況</h3>
+      <button class="secondary" id="btn-close-scoreboard" style="padding:.3em .8em;">閉じる</button>
+    </div>
+    <div id="scoreboard-list"></div>
+  </div>
+</div>
+
+<div class="wrap" style="padding:.7em 1em 1em; display:flex; flex-direction:column;">
+  <div id="error-area"></div>
+
+  <div id="board-area" style="display:none; flex-direction:column; flex:1; min-height:0;">
+    <div class="card" style="margin-bottom:.6em; flex-shrink:0;">
+      <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:.6em;">
+        <div id="phase-label" class="hint">出題を待っています…</div>
+        <div id="timer-display" style="font-size:1.4rem; font-weight:900; font-variant-numeric:tabular-nums; color:var(--gold);"></div>
+        <div style="display:flex; gap:.5em;">
+          <button class="secondary" id="btn-clear">消す</button>
+          <button class="gold" id="btn-submit">回答を確定する</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="canvas-wrap card" id="canvas-wrap" style="padding:0; flex:1; min-height:0;">
+      <canvas id="board" width="1000" height="700"></canvas>
+    </div>
+
+    <div class="hint" id="submit-status" style="margin-top:.5em; flex-shrink:0;"></div>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="js/timer-sync.js"></script>
+<script>
+const params = new URLSearchParams(window.location.search);
+const roomName = params.get('room');
+const password = params.get('password') || '';
+const playerName = params.get('name');
+const buzzerId = params.get('buzzerId') || '';
+
+if (!roomName || !playerName) {
+  document.getElementById('error-area').innerHTML = '<div class="error-msg">部屋情報が不足しています。ホームからやり直してください。</div>';
+  throw new Error('missing params');
+}
+
+document.getElementById('player-name-tag').textContent = playerName;
+document.getElementById('room-tag').textContent = roomName;
+
+const socket = io();
+const canvas = document.getElementById('board');
+const canvasWrap = document.getElementById('canvas-wrap');
+const ctx = canvas.getContext('2d');
+
+let drawing = false;
+let locked = false;
+
+// タブレットの画面サイズ・向きに合わせて、ボードの「見えている領域」いっぱいに
+// 描画できるようにする。
+// 以前は縦横比(1000:700)を保ったまま表示サイズだけ縮小していたため、画面の
+// 比率によっては実際に描画できる<canvas>より外側に余白ができてしまい、
+// そこが「白いのに描けない」死角になっていた。
+// この修正では、表示サイズに合わせて内部の描画解像度そのものを更新するため、
+// 見えている白い部分＝そのまま描画できる部分になり、死角が発生しない。
+function fitCanvasToViewport() {
+  const rect = canvasWrap.getBoundingClientRect();
+  const cssWidth = Math.max(80, Math.floor(rect.width));
+  const cssHeight = Math.max(80, Math.floor(window.innerHeight - rect.top - 12)); // 下端に少し余白
+  const dpr = window.devicePixelRatio || 1;
+
+  // リサイズ（画面回転など）で今までの描画内容が消えないよう、事前に画像として保存
+  let prevDataUrl = null;
+  if (canvas.width > 0 && canvas.height > 0) {
+    try { prevDataUrl = canvas.toDataURL('image/png'); } catch (e) {}
+  }
+
+  canvas.style.width = `${cssWidth}px`;
+  canvas.style.height = `${cssHeight}px`;
+  canvas.width = Math.round(cssWidth * dpr);
+  canvas.height = Math.round(cssHeight * dpr);
+
+  // 以降の描画命令はCSSピクセル単位（見た目どおりのサイズ）で指定できるようにする
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, cssWidth, cssHeight);
+  ctx.strokeStyle = '#111';
+  ctx.lineWidth = 6;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  if (prevDataUrl) {
+    const img = new Image();
+    img.onload = () => ctx.drawImage(img, 0, 0, cssWidth, cssHeight);
+    img.src = prevDataUrl;
+  }
+}
+
+window.addEventListener('resize', fitCanvasToViewport);
+window.addEventListener('orientationchange', () => setTimeout(fitCanvasToViewport, 250));
+window.addEventListener('load', fitCanvasToViewport);
+
+function normPoint(evt) {
+  const rect = canvas.getBoundingClientRect();
+  const cx = (evt.touches ? evt.touches[0].clientX : evt.clientX) - rect.left;
+  const cy = (evt.touches ? evt.touches[0].clientY : evt.clientY) - rect.top;
+  // x, y: CSSピクセル単位のローカル描画座標（ctxがdprでスケール済みのためそのまま使える）
+  // fx, fy: 他端末へ送る0〜1の正規化座標（表示サイズが端末ごとに異なっても揃うようにする）
+  return {
+    x: cx,
+    y: cy,
+    fx: rect.width ? cx / rect.width : 0,
+    fy: rect.height ? cy / rect.height : 0
+  };
+}
+
+function startDraw(evt) {
+  if (locked) return;
+  drawing = true;
+  const p = normPoint(evt);
+  ctx.beginPath();
+  ctx.moveTo(p.x, p.y);
+  socket.emit('draw_stroke', { phase: 'start', x: p.fx, y: p.fy });
+  evt.preventDefault();
+}
+function moveDraw(evt) {
+  if (!drawing || locked) return;
+  const p = normPoint(evt);
+  ctx.lineTo(p.x, p.y);
+  ctx.stroke();
+  socket.emit('draw_stroke', { phase: 'move', x: p.fx, y: p.fy });
+  evt.preventDefault();
+}
+function endDraw(evt) {
+  if (!drawing) return;
+  drawing = false;
+  socket.emit('draw_stroke', { phase: 'end' });
+}
+
+canvas.addEventListener('mousedown', startDraw);
+canvas.addEventListener('mousemove', moveDraw);
+window.addEventListener('mouseup', endDraw);
+canvas.addEventListener('touchstart', startDraw, { passive: false });
+canvas.addEventListener('touchmove', moveDraw, { passive: false });
+canvas.addEventListener('touchend', endDraw);
+
+function clearCanvas() {
+  const rect = canvas.getBoundingClientRect();
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, rect.width, rect.height);
+}
+
+document.getElementById('btn-clear').onclick = () => {
+  if (locked) return;
+  clearCanvas();
+  socket.emit('clear_canvas');
+};
+
+document.getElementById('btn-submit').onclick = () => {
+  const imageData = canvas.toDataURL('image/png');
+  socket.emit('submit_answer', { imageData });
+  document.getElementById('submit-status').textContent = '回答を送信しました。判定者の指示を待ってください。';
+};
+
+socket.on('connect', () => {
+  socket.emit('join_room', {
+    roomName, password, role: 'player', playerName,
+    buzzerId: buzzerId !== '' ? buzzerId : undefined
+  }, (res) => {
+    if (res.error) {
+      document.getElementById('error-area').innerHTML = `<div class="error-msg">${res.error}</div>`;
+      return;
+    }
+    document.getElementById('board-area').style.display = 'flex';
+    applyState(res.state);
+    fitCanvasToViewport();
+  });
+});
+
+socket.on('room_state', applyState);
+
+function applyState(state) {
+  if (!state) return;
+  const label = document.getElementById('phase-label');
+  const me = (state.players || []).find(p => p.id === socket.id);
+
+  if (state.phase === 'idle') {
+    locked = true;
+    label.textContent = '出題を待っています…';
+  } else {
+    // 全体のロック状態ではなく、自分自身の locked フラグを見る
+    // （判定者が個別にロック解除している場合はこちらが優先される）
+    locked = me ? !!me.locked : (state.phase === 'locked');
+    label.textContent = locked ? '回答はロックされています（判定者の指示を待ってください）' : '回答中… 制限時間内にボードに記入してください';
+  }
+
+  if (me) document.getElementById('my-score').textContent = `${me.score || 0}点`;
+
+  renderScoreboard(state);
+  renderTimer(state.timer);
+
+  // ラベルの文言変化（ロック表示・タイマー表示の有無など）でヘッダー行の高さが
+  // 変わることがあるため、その都度キャンバスのサイズを再計算して画面内に収める
+  requestAnimationFrame(fitCanvasToViewport);
+}
+
+function renderTimer(timer) {
+  const el = document.getElementById('timer-display');
+  if (!timer || !timer.endsAt) {
+    TimerSync.stop();
+    el.textContent = '';
+    return;
+  }
+  TimerSync.start(timer.endsAt, (sec) => {
+    el.textContent = TimerSync.format(sec);
+  });
+}
+
+// --- スコア状況パネル ---
+function renderScoreboard(state) {
+  const list = document.getElementById('scoreboard-list');
+  const sorted = [...(state.players || [])].sort((a, b) => (b.score || 0) - (a.score || 0));
+  if (!sorted.length) {
+    list.innerHTML = '<div class="hint">まだ参加者がいません</div>';
+    return;
+  }
+  list.innerHTML = sorted.map((p, i) => `
+    <div style="display:flex; align-items:center; gap:.7em; padding:.55em .2em; border-top:1px solid var(--line);">
+      <div style="width:2em; text-align:center; font-weight:900; color:${i === 0 ? 'var(--gold)' : 'var(--text-muted)'};">${i + 1}</div>
+      <div style="flex:1; font-weight:${p.id === socket.id ? '900' : '400'};">
+        ${escapeHtml(p.name)}${p.id === socket.id ? '<span class="hint"> (あなた)</span>' : ''}
+      </div>
+      <div style="font-weight:900; color:var(--gold);">${p.score || 0}点</div>
+    </div>
+  `).join('');
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+document.getElementById('btn-open-scoreboard').onclick = () => {
+  document.getElementById('scoreboard-overlay').style.display = 'flex';
+};
+document.getElementById('btn-close-scoreboard').onclick = () => {
+  document.getElementById('scoreboard-overlay').style.display = 'none';
+};
+
+socket.on('reset_canvases', () => {
+  clearCanvas();
+  locked = false;
+  document.getElementById('submit-status').textContent = '';
+});
+</script>
+</body>
+</html>

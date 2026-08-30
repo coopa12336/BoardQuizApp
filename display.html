@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>投影画面 | 早押し・ボードクイズ</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="topbar">
+  <div class="brand">📽 投影画面</div>
+  <div class="room-tag" id="room-tag">-</div>
+</div>
+
+<details class="card" id="arduino-panel" style="margin:1em 1.2em 0;">
+  <summary style="cursor:pointer; font-weight:700;">早押し機（Arduino）を使う場合はこちら（任意・無くても利用できます）</summary>
+  <div style="display:flex; align-items:center; gap:.8em; flex-wrap:wrap; margin-top:.8em;">
+    <button class="secondary" id="btn-arduino-connect">接続する</button>
+    <button class="danger" id="btn-arduino-disconnect">切断</button>
+    <span class="hint" id="arduino-status">未接続</span>
+  </div>
+  <div class="hint" id="arduino-support-warning" style="display:none;">
+    このブラウザ・端末はWeb Serial API未対応のため、Arduino接続機能は使えません
+    （パソコン版のChromeまたはEdgeのみ対応。投影画面そのものは通常どおり使えます）。
+  </div>
+</details>
+
+<div id="timer-display" style="text-align:center; font-size:3rem; font-weight:900; font-variant-numeric:tabular-nums; color:var(--gold); min-height:1.2em; margin-top:.6em;"></div>
+
+<div class="display-stage" id="stage">
+  <div class="hint" style="text-align:center;">読み込み中…</div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="js/board-sync.js"></script>
+<script src="js/timer-sync.js"></script>
+<script>
+const params = new URLSearchParams(window.location.search);
+const roomName = params.get('room');
+document.getElementById('room-tag').textContent = roomName || '-';
+
+if (!roomName) {
+  document.getElementById('stage').innerHTML = '<div class="error-msg">部屋名が指定されていません。URLに ?room=部屋名 を付けてください。</div>';
+  throw new Error('missing room');
+}
+
+const socket = io();
+let latestState = null;
+
+// 表示画面は「観客」として部屋に入る（判定者・回答者どちらでもない特別な参加）
+socket.on('connect', () => {
+  socket.emit('spectate_room', { roomName }, (res) => {
+    if (res && res.error) {
+      document.getElementById('stage').innerHTML = `<div class="error-msg">${res.error}</div>`;
+    }
+  });
+});
+
+socket.on('room_state', render);
+socket.on('draw_stroke', (data) => {
+  BoardSync.stroke(data.playerId, data);
+  refreshLiveCanvas(data.playerId);
+});
+socket.on('clear_canvas', ({ playerId }) => {
+  BoardSync.clear(playerId);
+  refreshLiveCanvas(playerId);
+});
+socket.on('reset_canvases', () => {
+  if (latestState) latestState.players.forEach(p => BoardSync.clear(p.id));
+});
+
+// 早押しで押した順位(1着=1, 2着=2, ...押していなければ0)に対して、
+// 判定者が設定した演出('flash'=点滅 / 'light'=点灯 / 'none'=なし)を割り当てる
+function getBuzzEffectClass(state, playerId) {
+  const idx = (state.buzzOrder || []).findIndex((b) => b.playerId === playerId);
+  if (idx < 0) return null;
+  const rank = idx + 1;
+  const cfg = state.buzzEffect || { first: 'flash', others: 'light' };
+  const effect = rank === 1 ? cfg.first : cfg.others;
+  if (effect === 'flash') return 'buzz-flash';
+  if (effect === 'light') return 'buzz-light';
+  return null;
+}
+
+// 判定者が「公開」にするまでは、シンキングタイム中の他人の解答が見えないよう
+// 投影画面には内容を出さず、代わりにプレースホルダーを表示する。
+function fillBoardContent(container, state, p) {
+  container.innerHTML = '';
+  if (!p.revealed) {
+    container.classList.add('board-hidden');
+    container.innerHTML = '<div class="hidden-placeholder">🙈<br>非公開</div>';
+    return;
+  }
+  container.classList.remove('board-hidden');
+  if (p.imageData) {
+    const img = document.createElement('img');
+    img.src = p.imageData;
+    container.appendChild(img);
+  } else {
+    const c = BoardSync.getCanvas(p.id);
+    c.style.width = '100%';
+    c.style.height = '100%';
+    container.appendChild(c);
+  }
+}
+
+function render(state) {
+  if (!state || state.roomName !== roomName) return;
+  latestState = state;
+  renderTimer(state.timer);
+
+  const stage = document.getElementById('stage');
+  if (state.display.mode === 'single' && state.display.selectedPlayerId) {
+    const p = state.players.find(pl => pl.id === state.display.selectedPlayerId);
+    if (!p) { renderGrid(state); return; }
+    stage.innerHTML = '';
+    const wrap = document.createElement('div');
+    wrap.className = 'display-single';
+
+    const boardHolder = document.createElement('div');
+    boardHolder.className = 'canvas-wrap';
+    const effectClass = getBuzzEffectClass(state, p.id);
+    if (effectClass) boardHolder.classList.add(effectClass);
+    fillBoardContent(boardHolder, state, p);
+    if (p.revealed && !p.imageData) {
+      const c = boardHolder.querySelector('canvas');
+      if (c) c.style.height = 'auto';
+    }
+    wrap.appendChild(boardHolder);
+
+    const nameTag = document.createElement('div');
+    nameTag.className = 'name-tag';
+    nameTag.textContent = p.name;
+    wrap.appendChild(nameTag);
+
+    const scoreTag = document.createElement('div');
+    scoreTag.style.cssText = 'font-size:1.4rem; font-weight:900; color:var(--gold);';
+    scoreTag.textContent = `${p.score || 0} 点`;
+    wrap.appendChild(scoreTag);
+
+    stage.innerHTML = '';
+    stage.appendChild(wrap);
+  } else {
+    renderGrid(state);
+  }
+}
+
+function renderGrid(state) {
+  const stage = document.getElementById('stage');
+  stage.innerHTML = '';
+  const grid = document.createElement('div');
+  grid.className = 'player-grid';
+  state.players.forEach((p) => {
+    const tile = document.createElement('div');
+    tile.className = 'player-tile' + (p.correct === true ? ' correct' : p.correct === false ? ' incorrect' : '');
+    const effectClass = getBuzzEffectClass(state, p.id);
+    if (effectClass) tile.classList.add(effectClass);
+
+    const canvasWrap = document.createElement('div');
+    canvasWrap.className = 'tile-canvas';
+    canvasWrap.dataset.playerId = p.id;
+    fillBoardContent(canvasWrap, state, p);
+
+    const foot = document.createElement('div');
+    foot.className = 'tile-head tile-foot';
+    foot.innerHTML = `<span>${escapeHtml(p.name)}</span><span style="color:var(--gold); font-weight:900;">${p.score || 0}点</span>`;
+    tile.appendChild(canvasWrap);
+    tile.appendChild(foot);
+    grid.appendChild(tile);
+  });
+  stage.appendChild(grid);
+}
+
+function refreshLiveCanvas(playerId) {
+  if (!latestState) return;
+  const p = latestState.players.find(pl => pl.id === playerId);
+  if (!p || p.imageData || !p.revealed) return; // 非公開中は更新しない
+  const wrap = document.querySelector(`.tile-canvas[data-player-id="${playerId}"]`) ||
+               (latestState.display.mode === 'single' && latestState.display.selectedPlayerId === playerId
+                 ? document.querySelector('.display-single .canvas-wrap') : null);
+  if (!wrap) return;
+  if (!wrap.querySelector('canvas')) {
+    wrap.innerHTML = '';
+    const c = BoardSync.getCanvas(playerId);
+    c.style.width = '100%';
+    c.style.height = '100%';
+    wrap.appendChild(c);
+  }
+}
+
+function renderTimer(timer) {
+  const el = document.getElementById('timer-display');
+  if (!timer || !timer.endsAt) {
+    TimerSync.stop();
+    el.textContent = '';
+    return;
+  }
+  TimerSync.start(timer.endsAt, (sec) => {
+    el.textContent = TimerSync.format(sec);
+  });
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+}
+
+// --- Arduino早押し機との接続 (Web Serial API) ---
+// このAPIはPC版Chrome/Edgeでのみ動作し、かつ「セキュアコンテキスト」
+// （https:// のページ、または http://localhost）でのみ使用できます。
+// ローカルネットワークで http://<IPアドレス>:3000 のように開いている場合は
+// 動作しないため、投影PC自身では http://localhost:3000/... で開いてください。
+let serialPort = null;
+let serialReader = null;
+let serialLineBuffer = '';
+
+if (!('serial' in navigator)) {
+  document.getElementById('arduino-support-warning').style.display = 'block';
+  document.getElementById('btn-arduino-connect').disabled = true;
+}
+
+document.getElementById('btn-arduino-connect').onclick = async () => {
+  if (!('serial' in navigator)) return;
+  try {
+    serialPort = await navigator.serial.requestPort();
+    await serialPort.open({ baudRate: 9600 });
+    document.getElementById('arduino-status').textContent = '接続しました。ボタンが押されるのを待っています…';
+    readSerialLoop();
+  } catch (e) {
+    document.getElementById('arduino-status').textContent = '接続失敗: ' + e.message;
+  }
+};
+
+document.getElementById('btn-arduino-disconnect').onclick = async () => {
+  try { if (serialReader) await serialReader.cancel(); } catch (e) {}
+  try { if (serialPort) await serialPort.close(); } catch (e) {}
+  serialPort = null;
+  serialReader = null;
+  document.getElementById('arduino-status').textContent = '切断しました';
+};
+
+async function readSerialLoop() {
+  const textDecoder = new TextDecoderStream();
+  serialPort.readable.pipeTo(textDecoder.writable);
+  const reader = textDecoder.readable.getReader();
+  serialReader = reader;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      serialLineBuffer += value;
+      let idx;
+      while ((idx = serialLineBuffer.indexOf('\n')) >= 0) {
+        const line = serialLineBuffer.slice(0, idx).trim();
+        serialLineBuffer = serialLineBuffer.slice(idx + 1);
+        handleSerialLine(line);
+      }
+    }
+  } catch (e) {
+    document.getElementById('arduino-status').textContent = '読み取りエラー: ' + e.message;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function handleSerialLine(line) {
+  const buzzerId = parseBuzzerIdFromLine(line);
+  if (buzzerId === null) return;
+  socket.emit('client_buzz', { buzzerId });
+  document.getElementById('arduino-status').textContent = `#${buzzerId} を受信 (${new Date().toLocaleTimeString()})`;
+}
+
+// 対応フォーマット:
+//  1) RP2040マイコンボードキット早押し機(10~12端子早押し機)形式:
+//     "ButtonRank<着順>:<ボタン番号>" 例: "ButtonRank1:3" → 3番のボタンが1着
+//  2) 自作の簡易早押し機形式: "BUZZ,<ボタン番号>" 例: "BUZZ,3"
+// どちらの形式が届いても自動判別して処理します。
+function parseBuzzerIdFromLine(line) {
+  let m = line.match(/ButtonRank\d+:(\d+)/i);
+  if (m) return Number(m[1]);
+  m = line.match(/BUZZ,(\d+)/i);
+  if (m) return Number(m[1]);
+  return null;
+}
+</script>
+</body>
+</html>
