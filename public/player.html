@@ -71,37 +71,48 @@ const socket = io();
 const canvas = document.getElementById('board');
 const canvasWrap = document.getElementById('canvas-wrap');
 const ctx = canvas.getContext('2d');
-ctx.fillStyle = '#fff';
-ctx.fillRect(0, 0, canvas.width, canvas.height);
-ctx.strokeStyle = '#111';
-ctx.lineWidth = 6;
-ctx.lineCap = 'round';
-ctx.lineJoin = 'round';
 
 let drawing = false;
 let locked = false;
 
-// タブレットの画面サイズに合わせてボードの表示サイズを調整する。
-// 内部の描画解像度(canvas.width/height = 1000x700)は変えず、画面上の見た目の
-// サイズだけを、はみ出さずに収まる最大サイズへ調整する（縦横比は維持）。
-// normPoint()は実際の表示サイズ(getBoundingClientRect)を基準に座標を正規化して
-// いるため、この調整をしても書いた位置がズレることはない。
+// タブレットの画面サイズ・向きに合わせて、ボードの「見えている領域」いっぱいに
+// 描画できるようにする。
+// 以前は縦横比(1000:700)を保ったまま表示サイズだけ縮小していたため、画面の
+// 比率によっては実際に描画できる<canvas>より外側に余白ができてしまい、
+// そこが「白いのに描けない」死角になっていた。
+// この修正では、表示サイズに合わせて内部の描画解像度そのものを更新するため、
+// 見えている白い部分＝そのまま描画できる部分になり、死角が発生しない。
 function fitCanvasToViewport() {
   const rect = canvasWrap.getBoundingClientRect();
-  const availableWidth = rect.width;
-  const availableHeight = window.innerHeight - rect.top - 12; // 下端に少し余白
+  const cssWidth = Math.max(80, Math.floor(rect.width));
+  const cssHeight = Math.max(80, Math.floor(window.innerHeight - rect.top - 12)); // 下端に少し余白
+  const dpr = window.devicePixelRatio || 1;
 
-  const ratio = canvas.width / canvas.height; // 1000/700
-  let targetWidth = availableWidth;
-  let targetHeight = targetWidth / ratio;
-
-  if (targetHeight > availableHeight) {
-    targetHeight = Math.max(120, availableHeight);
-    targetWidth = targetHeight * ratio;
+  // リサイズ（画面回転など）で今までの描画内容が消えないよう、事前に画像として保存
+  let prevDataUrl = null;
+  if (canvas.width > 0 && canvas.height > 0) {
+    try { prevDataUrl = canvas.toDataURL('image/png'); } catch (e) {}
   }
 
-  canvas.style.width = `${Math.floor(targetWidth)}px`;
-  canvas.style.height = `${Math.floor(targetHeight)}px`;
+  canvas.style.width = `${cssWidth}px`;
+  canvas.style.height = `${cssHeight}px`;
+  canvas.width = Math.round(cssWidth * dpr);
+  canvas.height = Math.round(cssHeight * dpr);
+
+  // 以降の描画命令はCSSピクセル単位（見た目どおりのサイズ）で指定できるようにする
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, cssWidth, cssHeight);
+  ctx.strokeStyle = '#111';
+  ctx.lineWidth = 6;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  if (prevDataUrl) {
+    const img = new Image();
+    img.onload = () => ctx.drawImage(img, 0, 0, cssWidth, cssHeight);
+    img.src = prevDataUrl;
+  }
 }
 
 window.addEventListener('resize', fitCanvasToViewport);
@@ -112,30 +123,31 @@ function normPoint(evt) {
   const rect = canvas.getBoundingClientRect();
   const cx = (evt.touches ? evt.touches[0].clientX : evt.clientX) - rect.left;
   const cy = (evt.touches ? evt.touches[0].clientY : evt.clientY) - rect.top;
-  return { x: cx / rect.width, y: cy / rect.height };
-}
-
-function toCanvasXY(p) {
-  return { x: p.x * canvas.width, y: p.y * canvas.height };
+  // x, y: CSSピクセル単位のローカル描画座標（ctxがdprでスケール済みのためそのまま使える）
+  // fx, fy: 他端末へ送る0〜1の正規化座標（表示サイズが端末ごとに異なっても揃うようにする）
+  return {
+    x: cx,
+    y: cy,
+    fx: rect.width ? cx / rect.width : 0,
+    fy: rect.height ? cy / rect.height : 0
+  };
 }
 
 function startDraw(evt) {
   if (locked) return;
   drawing = true;
   const p = normPoint(evt);
-  const c = toCanvasXY(p);
   ctx.beginPath();
-  ctx.moveTo(c.x, c.y);
-  socket.emit('draw_stroke', { phase: 'start', x: p.x, y: p.y });
+  ctx.moveTo(p.x, p.y);
+  socket.emit('draw_stroke', { phase: 'start', x: p.fx, y: p.fy });
   evt.preventDefault();
 }
 function moveDraw(evt) {
   if (!drawing || locked) return;
   const p = normPoint(evt);
-  const c = toCanvasXY(p);
-  ctx.lineTo(c.x, c.y);
+  ctx.lineTo(p.x, p.y);
   ctx.stroke();
-  socket.emit('draw_stroke', { phase: 'move', x: p.x, y: p.y });
+  socket.emit('draw_stroke', { phase: 'move', x: p.fx, y: p.fy });
   evt.preventDefault();
 }
 function endDraw(evt) {
@@ -152,8 +164,9 @@ canvas.addEventListener('touchmove', moveDraw, { passive: false });
 canvas.addEventListener('touchend', endDraw);
 
 function clearCanvas() {
+  const rect = canvas.getBoundingClientRect();
   ctx.fillStyle = '#fff';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillRect(0, 0, rect.width, rect.height);
 }
 
 document.getElementById('btn-clear').onclick = () => {
