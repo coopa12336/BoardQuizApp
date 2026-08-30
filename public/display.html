@@ -25,8 +25,7 @@
   </div>
 </details>
 
-<div class="buzz-banner" id="buzz-banner"></div>
-<div id="timer-display" style="text-align:center; font-size:3rem; font-weight:900; font-variant-numeric:tabular-nums; color:var(--gold); min-height:1.2em;"></div>
+<div id="timer-display" style="text-align:center; font-size:3rem; font-weight:900; font-variant-numeric:tabular-nums; color:var(--gold); min-height:1.2em; margin-top:.6em;"></div>
 
 <div class="display-stage" id="stage">
   <div class="hint" style="text-align:center;">読み込み中…</div>
@@ -47,7 +46,6 @@ if (!roomName) {
 
 const socket = io();
 let latestState = null;
-let lastBuzzCount = 0;
 
 // 表示画面は「観客」として部屋に入る（判定者・回答者どちらでもない特別な参加）
 socket.on('connect', () => {
@@ -69,8 +67,6 @@ socket.on('clear_canvas', ({ playerId }) => {
 });
 socket.on('reset_canvases', () => {
   if (latestState) latestState.players.forEach(p => BoardSync.clear(p.id));
-  document.getElementById('buzz-banner').textContent = '';
-  lastBuzzCount = 0;
 });
 
 // 早押しで押した順位(1着=1, 2着=2, ...押していなければ0)に対して、
@@ -86,10 +82,31 @@ function getBuzzEffectClass(state, playerId) {
   return null;
 }
 
+// 判定者が「公開」にするまでは、シンキングタイム中の他人の解答が見えないよう
+// 投影画面には内容を出さず、代わりにプレースホルダーを表示する。
+function fillBoardContent(container, state, p) {
+  container.innerHTML = '';
+  if (!p.revealed) {
+    container.classList.add('board-hidden');
+    container.innerHTML = '<div class="hidden-placeholder">🙈<br>非公開</div>';
+    return;
+  }
+  container.classList.remove('board-hidden');
+  if (p.imageData) {
+    const img = document.createElement('img');
+    img.src = p.imageData;
+    container.appendChild(img);
+  } else {
+    const c = BoardSync.getCanvas(p.id);
+    c.style.width = '100%';
+    c.style.height = '100%';
+    container.appendChild(c);
+  }
+}
+
 function render(state) {
   if (!state || state.roomName !== roomName) return;
   latestState = state;
-  updateBuzzBanner(state);
   renderTimer(state.timer);
 
   const stage = document.getElementById('stage');
@@ -104,15 +121,10 @@ function render(state) {
     boardHolder.className = 'canvas-wrap';
     const effectClass = getBuzzEffectClass(state, p.id);
     if (effectClass) boardHolder.classList.add(effectClass);
-    if (p.imageData) {
-      const img = document.createElement('img');
-      img.src = p.imageData;
-      boardHolder.appendChild(img);
-    } else {
-      const c = BoardSync.getCanvas(p.id);
-      c.style.width = '100%';
-      c.style.height = 'auto';
-      boardHolder.appendChild(c);
+    fillBoardContent(boardHolder, state, p);
+    if (p.revealed && !p.imageData) {
+      const c = boardHolder.querySelector('canvas');
+      if (c) c.style.height = 'auto';
     }
     wrap.appendChild(boardHolder);
 
@@ -141,21 +153,14 @@ function renderGrid(state) {
   state.players.forEach((p) => {
     const tile = document.createElement('div');
     tile.className = 'player-tile' + (p.correct === true ? ' correct' : p.correct === false ? ' incorrect' : '');
+    const effectClass = getBuzzEffectClass(state, p.id);
+    if (effectClass) tile.classList.add(effectClass);
+
     const canvasWrap = document.createElement('div');
     canvasWrap.className = 'tile-canvas';
     canvasWrap.dataset.playerId = p.id;
-    const effectClass = getBuzzEffectClass(state, p.id);
-    if (effectClass) canvasWrap.classList.add(effectClass);
-    if (p.imageData) {
-      const img = document.createElement('img');
-      img.src = p.imageData;
-      canvasWrap.appendChild(img);
-    } else {
-      const c = BoardSync.getCanvas(p.id);
-      c.style.width = '100%';
-      c.style.height = '100%';
-      canvasWrap.appendChild(c);
-    }
+    fillBoardContent(canvasWrap, state, p);
+
     const foot = document.createElement('div');
     foot.className = 'tile-head tile-foot';
     foot.innerHTML = `<span>${escapeHtml(p.name)}</span><span style="color:var(--gold); font-weight:900;">${p.score || 0}点</span>`;
@@ -169,7 +174,7 @@ function renderGrid(state) {
 function refreshLiveCanvas(playerId) {
   if (!latestState) return;
   const p = latestState.players.find(pl => pl.id === playerId);
-  if (!p || p.imageData) return;
+  if (!p || p.imageData || !p.revealed) return; // 非公開中は更新しない
   const wrap = document.querySelector(`.tile-canvas[data-player-id="${playerId}"]`) ||
                (latestState.display.mode === 'single' && latestState.display.selectedPlayerId === playerId
                  ? document.querySelector('.display-single .canvas-wrap') : null);
@@ -193,23 +198,6 @@ function renderTimer(timer) {
   TimerSync.start(timer.endsAt, (sec) => {
     el.textContent = TimerSync.format(sec);
   });
-}
-
-function updateBuzzBanner(state) {
-  const banner = document.getElementById('buzz-banner');
-  if (!state.buzzOrder.length) {
-    banner.textContent = '';
-    lastBuzzCount = 0;
-    return;
-  }
-  if (state.buzzOrder.length !== lastBuzzCount) {
-    lastBuzzCount = state.buzzOrder.length;
-    const top = state.buzzOrder[0];
-    banner.textContent = `⚡ ${top.name} が早押し！`;
-    banner.style.animation = 'none';
-    void banner.offsetWidth;
-    banner.style.animation = 'lamp-flash .6s ease';
-  }
 }
 
 function escapeHtml(s) {

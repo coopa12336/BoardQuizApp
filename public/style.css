@@ -220,19 +220,30 @@ canvas { display: block; touch-action: none; }
 .player-tile .tile-canvas img { width: 100%; height: 100%; object-fit: contain; }
 .player-tile .tile-canvas .empty { color: #bbb; font-size: .85rem; }
 
-/* 早押し演出（投影画面）: 該当者のボード部分を点滅/点灯させる */
+/* 非公開中のプレースホルダー（投影画面でシンキングタイム中に他人の解答を隠す） */
+.board-hidden {
+  background: var(--panel-bg-raised) !important;
+}
+.hidden-placeholder {
+  color: var(--text-muted);
+  font-size: 1.4rem;
+  text-align: center;
+  line-height: 1.7;
+}
+
+/* 早押し演出（投影画面）: 該当者のタイル全体の枠を点滅/点灯させる */
 .buzz-light {
-  box-shadow: inset 0 0 0 6px var(--gold);
+  box-shadow: 0 0 0 6px var(--gold), 0 0 26px 6px rgba(242, 183, 5, .6);
 }
 .buzz-flash {
   animation: buzz-blink .5s steps(1, end) infinite;
 }
 @keyframes buzz-blink {
-  0%, 49%   { box-shadow: inset 0 0 0 6px var(--gold); }
-  50%, 100% { box-shadow: inset 0 0 0 6px transparent; }
+  0%, 49%   { box-shadow: 0 0 0 6px var(--gold), 0 0 26px 6px rgba(242, 183, 5, .6); }
+  50%, 100% { box-shadow: none; }
 }
-.tile-actions { display: flex; gap: .4em; padding: .5em; }
-.tile-actions button { flex: 1; padding: .4em; font-size: .85rem; }
+.tile-actions { display: flex; gap: .4em; padding: .5em; flex-wrap: wrap; }
+.tile-actions button { flex: 1 1 40%; padding: .4em; font-size: .85rem; }
 .status-dot { width: .6em; height: .6em; border-radius: 50%; background: var(--line); }
 .status-dot.on { background: var(--green); }
 
@@ -257,6 +268,7 @@ canvas { display: block; touch-action: none; }
   letter-spacing: .02em;
 }
 .display-single .canvas-wrap { max-width: 90vw; max-height: 70vh; }
+.display-single .canvas-wrap.board-hidden { width: 55vw; height: 42vh; }
 .display-single img { max-width: 90vw; max-height: 65vh; object-fit: contain; }
 
 .buzz-banner {

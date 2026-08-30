@@ -42,6 +42,17 @@
     </div>
 
     <div class="card" style="margin-bottom:1em;">
+      <h3 style="margin-bottom:.6em;">解答の公開（投影画面）</h3>
+      <p class="hint">シンキングタイム中は投影画面に他の人の解答が映らないよう、既定では非公開になっています。
+        公開するまでは投影画面には何も表示されません（判定者画面には常にリアルタイムで表示されます）。</p>
+      <div style="display:flex; gap:.6em; align-items:center; flex-wrap:wrap; margin-top:.8em;">
+        <button class="gold" id="btn-reveal-all">全員の解答を公開する</button>
+        <button class="secondary" id="btn-hide-all">全員を非公開にする</button>
+        <span class="hint">個別に公開/非公開を切り替えたい場合は、下の回答者タイルの「👁」ボタンを使ってください。</span>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:1em;">
       <h3 style="margin-bottom:.6em;">プロジェクター表示の切り替え</h3>
       <div style="display:flex; gap:.6em; align-items:center; flex-wrap:wrap;">
         <button class="secondary" id="btn-display-grid">全員を一覧表示</button>
@@ -167,6 +178,8 @@ document.getElementById('btn-new-question').onclick = () => socket.emit('judge_n
 document.getElementById('btn-lock').onclick = () => socket.emit('judge_lock');
 document.getElementById('btn-reset-buzz').onclick = () => socket.emit('judge_reset_buzzer');
 document.getElementById('btn-display-grid').onclick = () => socket.emit('judge_set_display', { mode: 'grid' });
+document.getElementById('btn-reveal-all').onclick = () => socket.emit('judge_set_reveal_all', { revealed: true });
+document.getElementById('btn-hide-all').onclick = () => socket.emit('judge_set_reveal_all', { revealed: false });
 
 document.getElementById('btn-timer-start').onclick = () => {
   const seconds = Number(document.getElementById('timer-seconds-input').value);
@@ -218,7 +231,7 @@ function render(state) {
 
     const head = document.createElement('div');
     head.className = 'tile-head';
-    head.innerHTML = `<span>${escapeHtml(p.name)} <span style="color:var(--gold); font-weight:900;">${p.score || 0}点</span></span><span style="display:flex; align-items:center; gap:.4em;"><span title="${p.locked ? 'ロック中' : '記入可能'}">${p.locked ? '🔒' : '✏️'}</span><span class="status-dot ${p.hasSubmitted ? 'on' : ''}"></span></span>`;
+    head.innerHTML = `<span>${escapeHtml(p.name)} <span style="color:var(--gold); font-weight:900;">${p.score || 0}点</span></span><span style="display:flex; align-items:center; gap:.4em;"><span title="${p.revealed ? '投影画面に公開中' : '投影画面には非公開'}">${p.revealed ? '👁' : '🙈'}</span><span title="${p.locked ? 'ロック中' : '記入可能'}">${p.locked ? '🔒' : '✏️'}</span><span class="status-dot ${p.hasSubmitted ? 'on' : ''}"></span></span>`;
 
     const canvasWrap = document.createElement('div');
     canvasWrap.className = 'tile-canvas';
@@ -248,9 +261,14 @@ function render(state) {
     lockBtn.textContent = p.locked ? '🔓 ロック解除' : '🔒 ロックする';
     lockBtn.className = 'secondary';
     lockBtn.onclick = () => socket.emit('judge_set_player_lock', { playerId: p.id, locked: !p.locked });
+    const revealBtn = document.createElement('button');
+    revealBtn.textContent = p.revealed ? '🙈 非公開にする' : '👁 公開する';
+    revealBtn.className = 'secondary';
+    revealBtn.onclick = () => socket.emit('judge_set_reveal', { playerId: p.id, revealed: !p.revealed });
     actions.appendChild(okBtn);
     actions.appendChild(ngBtn);
     actions.appendChild(lockBtn);
+    actions.appendChild(revealBtn);
 
     tile.appendChild(head);
     tile.appendChild(canvasWrap);
