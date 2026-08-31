@@ -247,6 +247,35 @@ canvas { display: block; touch-action: none; }
 .status-dot { width: .6em; height: .6em; border-radius: 50%; background: var(--line); }
 .status-dot.on { background: var(--green); }
 
+/* 得点ルールボタン(判定者画面): 正解/不正解の2択ではなく、設定済みの
+   全パターンを直接選べるボタン群。押した順位に一致するものは薄い枠で
+   「おすすめ」を示し、実際に選択済みのものは金色の枠で強調する。 */
+.tile-rule-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: .4em;
+  padding: .5em;
+}
+.rule-btn {
+  display: flex;
+  align-items: center;
+  gap: .5em;
+  background: var(--panel-bg-raised);
+  border: 2px solid var(--line);
+  border-radius: 10px;
+  padding: .35em .5em;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text);
+}
+.rule-btn:hover { filter: brightness(1.1); }
+.rule-btn.suggested { border-color: var(--blue); border-style: dashed; }
+.rule-btn.applied { border-color: var(--gold); border-style: solid; box-shadow: 0 0 0 1px var(--gold); }
+.rule-btn-icon { flex: 0 0 auto; line-height: 0; }
+.rule-btn-text { display: flex; flex-direction: column; gap: .15em; line-height: 1.2; }
+.rule-btn-label { font-size: .72rem; color: var(--text-muted); }
+.rule-btn-points { font-size: .78rem; font-weight: 700; white-space: nowrap; }
+
 /* ------------------------- プロジェクター表示画面 ------------------------- */
 .display-stage {
   flex: 1;

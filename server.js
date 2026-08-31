@@ -27,7 +27,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 //   password: string,
 //   judgeSocketId: string|null,
 //   players: Map(socketId => { name, buzzerId, hasSubmitted, imageData, correct,
-//                               score, lastDelta, locked, revealed }),
+//                               score, lastDelta, appliedRuleId, locked, revealed }),
 //   phase: 'idle' | 'writing' | 'locked',
 //   buzzOrder: [{ buzzerId, playerId, name, ts }],
 //   buzzAccepting: boolean,
@@ -80,6 +80,7 @@ function getRoomPublicState(roomName) {
       correct: p.correct,
       score: p.score || 0,
       lastDelta: p.lastDelta || 0,
+      appliedRuleId: p.appliedRuleId || null,
       locked: !!p.locked,
       revealed: !!p.revealed
     }))
@@ -190,6 +191,7 @@ io.on('connection', (socket) => {
         correct: null,
         score: 0,
         lastDelta: 0,
+        appliedRuleId: null,
         locked: room.phase !== 'writing',
         revealed: false
       });
@@ -255,6 +257,7 @@ io.on('connection', (socket) => {
       p.imageData = null;
       p.correct = null;
       p.lastDelta = 0; // 前の問題の加減点効果はリセット（累計スコア自体は維持）
+      p.appliedRuleId = null; // 前の問題でどのルールを選んだかの記録もリセット
       p.locked = false; // 個別ロックも含めて全員分を解除
       p.revealed = false; // 投影画面への公開状態もリセット（次の問題は非公開から開始）
     }
@@ -332,23 +335,22 @@ io.on('connection', (socket) => {
     broadcastRoomState(joinedRoom);
   });
 
-  // 正誤判定。押した順位（押していなければ「押さず」扱い）と正誤の組み合わせから
-  // scoreRulesを引き当てて自動で加減点する。判定をやり直した場合は前回の加減点分を
-  // 打ち消してから再計算するので、何度押し直しても累計スコアはズレない。
-  socket.on('judge_mark', ({ playerId, correct }) => {
+  // 正誤判定。「正解/不正解」の2択ではなく、設定済みの得点ルールの中から
+  // 判定者が直接どれに該当するかを選ぶ（例: 押して1着で正解、押さずに不正解、など）。
+  // やり直した場合は前回の加減点分を打ち消してから再計算するので、
+  // 何度選び直しても累計スコアはズレない。
+  socket.on('judge_apply_score_rule', ({ playerId, ruleId }) => {
     if (role !== 'judge' || !joinedRoom) return;
     const room = rooms.get(joinedRoom);
     if (!room || !room.players.has(playerId)) return;
+    const rule = (room.scoreRules || []).find((r) => r.id === ruleId);
+    if (!rule) return;
     const player = room.players.get(playerId);
 
-    const buzzIndex = room.buzzOrder.findIndex((b) => b.playerId === playerId);
-    const rank = buzzIndex >= 0 ? buzzIndex + 1 : null;
-    const rule = room.scoreRules.find((r) => r.rank === rank && r.correct === correct);
-    const delta = rule ? rule.points : 0;
-
-    player.score = (player.score || 0) - (player.lastDelta || 0) + delta;
-    player.lastDelta = delta;
-    player.correct = correct;
+    player.score = (player.score || 0) - (player.lastDelta || 0) + rule.points;
+    player.lastDelta = rule.points;
+    player.correct = rule.correct;
+    player.appliedRuleId = ruleId;
 
     broadcastRoomState(joinedRoom);
   });
@@ -403,7 +405,21 @@ io.on('connection', (socket) => {
     for (const p of room.players.values()) {
       p.score = 0;
       p.lastDelta = 0;
+      p.appliedRuleId = null;
     }
+    broadcastRoomState(joinedRoom);
+  });
+
+  // 正解/不正解の自動加減点とは別に、任意の点数を手動で加減する
+  // （ボーナス点や独自ルールでの加点など、正解/不正解だけでは表現できないケース向け）
+  socket.on('judge_adjust_score', ({ playerId, amount }) => {
+    if (role !== 'judge' || !joinedRoom) return;
+    const room = rooms.get(joinedRoom);
+    if (!room || !room.players.has(playerId)) return;
+    const n = Number(amount);
+    if (!Number.isFinite(n) || n === 0) return;
+    const p = room.players.get(playerId);
+    p.score = (p.score || 0) + n;
     broadcastRoomState(joinedRoom);
   });
 

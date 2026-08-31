@@ -23,6 +23,7 @@
         <button class="gold" id="btn-new-question">次の問題へ（ボード・早押しをリセット）</button>
         <button class="secondary" id="btn-lock">回答をロックする（全員）</button>
         <button class="secondary" id="btn-reset-buzz">早押しだけリセット</button>
+        <button class="gold" id="btn-reveal-all">全員の解答を公開する</button>
       </div>
       <div class="hint" id="phase-status" style="margin-top:.7em;"></div>
     </div>
@@ -44,19 +45,11 @@
     <div class="card" style="margin-bottom:1em;">
       <h3 style="margin-bottom:.6em;">解答の公開（投影画面）</h3>
       <p class="hint">シンキングタイム中は投影画面に他の人の解答が映らないよう、既定では非公開になっています。
-        公開するまでは投影画面には何も表示されません（判定者画面には常にリアルタイムで表示されます）。</p>
+        公開するまでは投影画面には何も表示されません（判定者画面には常にリアルタイムで表示されます）。
+        「全員の解答を公開する」は上の「進行操作」に移動しました。</p>
       <div style="display:flex; gap:.6em; align-items:center; flex-wrap:wrap; margin-top:.8em;">
-        <button class="gold" id="btn-reveal-all">全員の解答を公開する</button>
         <button class="secondary" id="btn-hide-all">全員を非公開にする</button>
         <span class="hint">個別に公開/非公開を切り替えたい場合は、下の回答者タイルの「👁」ボタンを使ってください。</span>
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom:1em;">
-      <h3 style="margin-bottom:.6em;">プロジェクター表示の切り替え</h3>
-      <div style="display:flex; gap:.6em; align-items:center; flex-wrap:wrap;">
-        <button class="secondary" id="btn-display-grid">全員を一覧表示</button>
-        <span class="hint">または、下の回答者タイルをクリックすると、その人の解答を大きく表示します。</span>
       </div>
     </div>
 
@@ -67,62 +60,77 @@
       </div>
     </div>
 
-    <div class="card" style="margin-bottom:1em;">
-      <h3 style="margin-bottom:.6em;">投影画面での早押し演出</h3>
-      <p class="hint">早押し機が押された時、投影画面上でその人のボード回答部分をどう強調するかを設定します。</p>
-      <div style="display:flex; gap:1.2em; flex-wrap:wrap; margin-top:.8em;">
-        <div class="field" style="margin:0;">
-          <label>1着</label>
-          <select id="buzz-effect-first">
-            <option value="flash">点滅させる</option>
-            <option value="light">点灯させる（点滅しない）</option>
-            <option value="none">何もしない</option>
-          </select>
-        </div>
-        <div class="field" style="margin:0;">
-          <label>2着以降</label>
-          <select id="buzz-effect-others">
-            <option value="flash">点滅させる</option>
-            <option value="light">点灯させる（点滅しない）</option>
-            <option value="none">何もしない</option>
-          </select>
-        </div>
-      </div>
-    </div>
+    <details style="margin-bottom:1em; background:var(--panel-bg); border:1px solid var(--line); border-radius:var(--radius); padding:1em;">
+      <summary style="cursor:pointer; font-weight:700; font-size:1.05rem;">⚙ その他の設定（プロジェクター表示・早押し演出・Arduinoテスト・得点ルール）</summary>
+      <div style="margin-top:1em; display:flex; flex-direction:column; gap:1em;">
 
-    <div class="card" style="margin-bottom:1em;">
-      <h3 style="margin-bottom:.6em;">早押し機（Arduino）テスト（任意）</h3>
-      <p class="hint">早押し機を使わない場合、このカードは無視して構いません。ボード解答だけで進行できます。
-        実機のArduinoは<strong>投影画面（display.html）</strong>のブラウザから接続します。
-        ここでは実機なしで早押し動作を確認できます。</p>
-      <div id="simulate-buttons" style="display:flex; gap:.4em; margin-top:.6em; flex-wrap:wrap;"></div>
-    </div>
-
-    <div class="card" style="margin-bottom:1em;">
-      <h3 style="margin-bottom:.6em;">得点ルール設定</h3>
-      <p class="hint">「正解/不正解」ボタンを押した時、回答者がボタンを押していた順位（押していなければ「押さず」）に応じて、
-        ここで設定した点数が自動で加減されます。数値はいつでも変更でき、変更するとその場で反映されます。</p>
-      <table style="width:100%; border-collapse:collapse; margin-top:.8em;" id="score-rules-table">
-        <thead>
-          <tr style="text-align:left; color:var(--text-muted); font-size:.85rem;">
-            <th style="padding:.3em .5em;">条件</th>
-            <th style="padding:.3em .5em; width:8em;">点数</th>
-            <th style="padding:.3em .5em; width:3em;"></th>
-          </tr>
-        </thead>
-        <tbody id="score-rules-body"></tbody>
-      </table>
-      <div style="display:flex; gap:.6em; align-items:end; margin-top:1em; flex-wrap:wrap;">
-        <div class="field" style="margin:0;">
-          <label>順位を指定してルールを追加</label>
-          <input id="new-rank-input" type="number" min="3" max="99" placeholder="例: 3" style="width:6em;">
+        <div class="card">
+          <h3 style="margin-bottom:.6em;">プロジェクター表示の切り替え</h3>
+          <div style="display:flex; gap:.6em; align-items:center; flex-wrap:wrap;">
+            <button class="secondary" id="btn-display-grid">全員を一覧表示</button>
+            <span class="hint">または、下の回答者タイルをクリックすると、その人の解答を大きく表示します。</span>
+          </div>
         </div>
-        <button class="secondary" id="btn-add-rank">この順位の正解/不正解ルールを追加</button>
+
+        <div class="card">
+          <h3 style="margin-bottom:.6em;">投影画面での早押し演出</h3>
+          <p class="hint">早押し機が押された時、投影画面上でその人のボード回答部分をどう強調するかを設定します。</p>
+          <div style="display:flex; gap:1.2em; flex-wrap:wrap; margin-top:.8em;">
+            <div class="field" style="margin:0;">
+              <label>1着</label>
+              <select id="buzz-effect-first">
+                <option value="flash">点滅させる</option>
+                <option value="light">点灯させる（点滅しない）</option>
+                <option value="none">何もしない</option>
+              </select>
+            </div>
+            <div class="field" style="margin:0;">
+              <label>2着以降</label>
+              <select id="buzz-effect-others">
+                <option value="flash">点滅させる</option>
+                <option value="light">点灯させる（点滅しない）</option>
+                <option value="none">何もしない</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3 style="margin-bottom:.6em;">早押し機（Arduino）テスト（任意）</h3>
+          <p class="hint">早押し機を使わない場合、このカードは無視して構いません。ボード解答だけで進行できます。
+            実機のArduinoは<strong>投影画面（display.html）</strong>のブラウザから接続します。
+            ここでは実機なしで早押し動作を確認できます。</p>
+          <div id="simulate-buttons" style="display:flex; gap:.4em; margin-top:.6em; flex-wrap:wrap;"></div>
+        </div>
+
+        <div class="card">
+          <h3 style="margin-bottom:.6em;">得点ルール設定</h3>
+          <p class="hint">「正解/不正解」ボタンを押した時、回答者がボタンを押していた順位（押していなければ「押さず」）に応じて、
+            ここで設定した点数が自動で加減されます。数値はいつでも変更でき、変更するとその場で反映されます。</p>
+          <table style="width:100%; border-collapse:collapse; margin-top:.8em;" id="score-rules-table">
+            <thead>
+              <tr style="text-align:left; color:var(--text-muted); font-size:.85rem;">
+                <th style="padding:.3em .5em;">条件</th>
+                <th style="padding:.3em .5em; width:8em;">点数</th>
+                <th style="padding:.3em .5em; width:3em;"></th>
+              </tr>
+            </thead>
+            <tbody id="score-rules-body"></tbody>
+          </table>
+          <div style="display:flex; gap:.6em; align-items:end; margin-top:1em; flex-wrap:wrap;">
+            <div class="field" style="margin:0;">
+              <label>順位を指定してルールを追加</label>
+              <input id="new-rank-input" type="number" min="3" max="99" placeholder="例: 3" style="width:6em;">
+            </div>
+            <button class="secondary" id="btn-add-rank">この順位の正解/不正解ルールを追加</button>
+          </div>
+          <div style="margin-top:1em;">
+            <button class="danger" id="btn-reset-scores">全員のスコアを0にリセット</button>
+          </div>
+        </div>
+
       </div>
-      <div style="margin-top:1em;">
-        <button class="danger" id="btn-reset-scores">全員のスコアを0にリセット</button>
-      </div>
-    </div>
+    </details>
 
     <div class="card">
       <h3 style="margin-bottom:.8em;">回答者一覧</h3>
@@ -249,14 +257,6 @@ function render(state) {
 
     const actions = document.createElement('div');
     actions.className = 'tile-actions';
-    const okBtn = document.createElement('button');
-    okBtn.textContent = '正解';
-    okBtn.className = 'gold';
-    okBtn.onclick = () => socket.emit('judge_mark', { playerId: p.id, correct: true });
-    const ngBtn = document.createElement('button');
-    ngBtn.textContent = '不正解';
-    ngBtn.className = 'danger';
-    ngBtn.onclick = () => socket.emit('judge_mark', { playerId: p.id, correct: false });
     const lockBtn = document.createElement('button');
     lockBtn.textContent = p.locked ? '🔓 ロック解除' : '🔒 ロックする';
     lockBtn.className = 'secondary';
@@ -265,16 +265,62 @@ function render(state) {
     revealBtn.textContent = p.revealed ? '🙈 非公開にする' : '👁 公開する';
     revealBtn.className = 'secondary';
     revealBtn.onclick = () => socket.emit('judge_set_reveal', { playerId: p.id, revealed: !p.revealed });
-    actions.appendChild(okBtn);
-    actions.appendChild(ngBtn);
     actions.appendChild(lockBtn);
     actions.appendChild(revealBtn);
 
+    // 得点ルールごとのボタン（「正解/不正解」の2択ではなく、設定済みの
+    // 全パターンをボタンとして直接選べるようにする。押した順位に一致する
+    // ボタンには薄い枠で「おすすめ」を示すが、どのボタンでも選択できる）
+    const ruleGrid = document.createElement('div');
+    ruleGrid.className = 'tile-rule-grid';
+    const buzzIdx = state.buzzOrder.findIndex((b) => b.playerId === p.id);
+    const actualRank = buzzIdx >= 0 ? buzzIdx + 1 : null;
+    const sortedRules = sortScoreRules(state.scoreRules || []);
+    sortedRules.forEach((rule) => {
+      const btn = document.createElement('button');
+      btn.className = 'rule-btn';
+      if (p.appliedRuleId === rule.id) btn.classList.add('applied');
+      else if (rule.rank === actualRank) btn.classList.add('suggested');
+      btn.innerHTML = `
+        <span class="rule-btn-icon">${scoreRuleIconHTML(rule)}</span>
+        <span class="rule-btn-text">
+          <span class="rule-btn-label">${escapeHtml(rankLabel(rule.rank))}</span>
+          <span class="rule-btn-points" style="color:${rule.correct ? 'var(--gold)' : 'var(--red)'};">
+            ${rule.correct ? '○ 正解' : '× 不正解'}　${rule.points >= 0 ? '+' : ''}${rule.points}点
+          </span>
+        </span>`;
+      btn.onclick = () => socket.emit('judge_apply_score_rule', { playerId: p.id, ruleId: rule.id });
+      ruleGrid.appendChild(btn);
+    });
+
+    // 正解/不正解の自動加減点とは別に、任意の点数を手動で加減できる欄
+    // （ボーナス点、途中経過の補正、独自ルールでの加点など自由に使える）
+    const adjustRow = document.createElement('div');
+    adjustRow.style.cssText = 'display:flex; gap:.4em; padding:0 .5em .6em;';
+    const adjustInput = document.createElement('input');
+    adjustInput.type = 'number';
+    adjustInput.placeholder = '±点数';
+    adjustInput.style.cssText = 'width:5.5em; flex:0 0 auto;';
+    const adjustBtn = document.createElement('button');
+    adjustBtn.className = 'secondary';
+    adjustBtn.textContent = '加減点する';
+    adjustBtn.style.flex = '1';
+    adjustBtn.onclick = () => {
+      const amount = Number(adjustInput.value);
+      if (!Number.isFinite(amount) || amount === 0) { alert('0以外の数値を入力してください'); return; }
+      socket.emit('judge_adjust_score', { playerId: p.id, amount });
+      adjustInput.value = '';
+    };
+    adjustRow.appendChild(adjustInput);
+    adjustRow.appendChild(adjustBtn);
+
     tile.appendChild(head);
     tile.appendChild(canvasWrap);
+    tile.appendChild(ruleGrid);
     tile.appendChild(actions);
+    tile.appendChild(adjustRow);
     tile.onclick = (e) => {
-      if (e.target.tagName === 'BUTTON') return;
+      if (['BUTTON', 'INPUT', 'SELECT'].includes(e.target.tagName)) return;
       socket.emit('judge_set_display', { mode: 'single', selectedPlayerId: p.id });
     };
     grid.appendChild(tile);
@@ -311,14 +357,52 @@ function rankLabel(rank) {
   return rank === null ? '押さずに解答' : `押して${rank}着`;
 }
 
-function renderScoreRules(rules) {
-  // 表示順: 押さず → 1着 → 2着 → … 、各順位内で 正解→不正解
-  const sorted = [...rules].sort((a, b) => {
+// 表示順: 押さず → 1着 → 2着 → … 、各順位内で 正解→不正解
+function sortScoreRules(rules) {
+  return [...rules].sort((a, b) => {
     const ra = a.rank === null ? -1 : a.rank;
     const rb = b.rank === null ? -1 : b.rank;
     if (ra !== rb) return ra - rb;
     return (a.correct === b.correct) ? 0 : (a.correct ? -1 : 1);
   });
+}
+
+// 得点ルールボタンのアイコン。ボタンを押して解答したルールは、実際に使われている
+// 早押し機をイメージしたイラスト（黒い台座＋赤いドーム）に○/×を重ねたアイコンに、
+// 押さずに解答したルールは、鉛筆に○/×を重ねたアイコンにする。
+function scoreRuleIconHTML(rule) {
+  return rule.rank === null ? pencilIconSVG(rule.correct) : buzzerIconSVG(rule.correct);
+}
+
+function buzzerIconSVG(correct) {
+  const domeColor = correct ? '#e6484f' : '#8a3236';
+  const overlay = correct
+    ? '<path d="M13 18l5 5 9-11" stroke="#fff" stroke-width="3.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>'
+    : '<path d="M13 10l14 14M27 10L13 24" stroke="#fff" stroke-width="3.6" fill="none" stroke-linecap="round"/>';
+  return `<svg viewBox="0 0 40 38" width="28" height="26" aria-hidden="true">
+    <rect x="4" y="24" width="32" height="10" rx="3" fill="#12151c" stroke="#333c4d" stroke-width="1"/>
+    <circle cx="20" cy="16" r="13" fill="${domeColor}"/>
+    <ellipse cx="15" cy="11" rx="4" ry="2.2" fill="rgba(255,255,255,.3)"/>
+    ${overlay}
+  </svg>`;
+}
+
+function pencilIconSVG(correct) {
+  const overlay = correct
+    ? '<path d="M22 26l3 3 5-6" stroke="var(--gold)" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>'
+    : '<path d="M22 22l7 7M29 22l-7 7" stroke="var(--red)" stroke-width="3" fill="none" stroke-linecap="round"/>';
+  return `<svg viewBox="0 0 40 38" width="28" height="26" aria-hidden="true">
+    <g transform="rotate(45 16 16)">
+      <rect x="10" y="2" width="12" height="20" rx="2" fill="#4cc9f0"/>
+      <polygon points="10,22 22,22 16,30" fill="#4cc9f0"/>
+      <rect x="10" y="2" width="12" height="5" fill="#e8f6fc"/>
+    </g>
+    ${overlay}
+  </svg>`;
+}
+
+function renderScoreRules(rules) {
+  const sorted = sortScoreRules(rules);
 
   const body = document.getElementById('score-rules-body');
   body.innerHTML = '';
