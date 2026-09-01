@@ -194,7 +194,6 @@ canvas { display: block; touch-action: none; }
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  cursor: pointer;
 }
 .player-tile.correct { border-color: var(--green); }
 .player-tile.incorrect { border-color: var(--red); }

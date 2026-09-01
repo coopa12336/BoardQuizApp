@@ -24,8 +24,11 @@
         <button class="secondary" id="btn-lock">回答をロックする（全員）</button>
         <button class="secondary" id="btn-reset-buzz">早押しだけリセット</button>
         <button class="gold" id="btn-reveal-all">全員の解答を公開する</button>
+        <button class="secondary" id="btn-hide-all">全員を非公開にする</button>
       </div>
       <div class="hint" id="phase-status" style="margin-top:.7em;"></div>
+      <div class="hint" style="margin-top:.3em;">解答の公開/非公開は、投影画面に他の人の解答が見えないようにするための機能です。
+        個別に切り替えたい場合は、下の回答者タイルの「👁」ボタンを使ってください。</div>
     </div>
 
     <div class="card" style="margin-bottom:1em;">
@@ -39,17 +42,6 @@
         <button id="btn-timer-start">タイマー開始</button>
         <button class="danger" id="btn-timer-stop">タイマー停止</button>
         <div id="timer-display" style="font-size:1.8rem; font-weight:900; font-variant-numeric:tabular-nums; color:var(--gold);"></div>
-      </div>
-    </div>
-
-    <div class="card" style="margin-bottom:1em;">
-      <h3 style="margin-bottom:.6em;">解答の公開（投影画面）</h3>
-      <p class="hint">シンキングタイム中は投影画面に他の人の解答が映らないよう、既定では非公開になっています。
-        公開するまでは投影画面には何も表示されません（判定者画面には常にリアルタイムで表示されます）。
-        「全員の解答を公開する」は上の「進行操作」に移動しました。</p>
-      <div style="display:flex; gap:.6em; align-items:center; flex-wrap:wrap; margin-top:.8em;">
-        <button class="secondary" id="btn-hide-all">全員を非公開にする</button>
-        <span class="hint">個別に公開/非公開を切り替えたい場合は、下の回答者タイルの「👁」ボタンを使ってください。</span>
       </div>
     </div>
 
@@ -244,6 +236,8 @@ function render(state) {
     const canvasWrap = document.createElement('div');
     canvasWrap.className = 'tile-canvas';
     canvasWrap.dataset.playerId = p.id;
+    canvasWrap.style.cursor = 'pointer';
+    canvasWrap.title = 'クリックで投影画面に大きく表示（もう一度クリックで一覧表示に戻す）';
     if (p.imageData) {
       const img = document.createElement('img');
       img.src = p.imageData;
@@ -254,6 +248,17 @@ function render(state) {
       c.style.height = '100%';
       canvasWrap.appendChild(c);
     }
+    // ボード部分だけをクリック対象にする（タイル全体ではない）。
+    // すでにこの人が投影画面に大きく表示されている場合は、もう一度クリックすると
+    // 一覧表示に戻す（トグル動作）。
+    canvasWrap.onclick = () => {
+      const isShowingThisPlayer = state.display.mode === 'single' && state.display.selectedPlayerId === p.id;
+      if (isShowingThisPlayer) {
+        socket.emit('judge_set_display', { mode: 'grid' });
+      } else {
+        socket.emit('judge_set_display', { mode: 'single', selectedPlayerId: p.id });
+      }
+    };
 
     const actions = document.createElement('div');
     actions.className = 'tile-actions';
@@ -319,10 +324,6 @@ function render(state) {
     tile.appendChild(ruleGrid);
     tile.appendChild(actions);
     tile.appendChild(adjustRow);
-    tile.onclick = (e) => {
-      if (['BUTTON', 'INPUT', 'SELECT'].includes(e.target.tagName)) return;
-      socket.emit('judge_set_display', { mode: 'single', selectedPlayerId: p.id });
-    };
     grid.appendChild(tile);
   });
 
