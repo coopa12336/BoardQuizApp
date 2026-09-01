@@ -197,7 +197,8 @@ canvas { display: block; touch-action: none; }
 }
 .player-tile.correct { border-color: var(--green); }
 .player-tile.incorrect { border-color: var(--red); }
-.player-tile .tile-head {
+.player-tile .tile-head,
+.display-tile .tile-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -205,7 +206,8 @@ canvas { display: block; touch-action: none; }
   background: var(--panel-bg-raised);
   font-weight: 700;
 }
-.player-tile .tile-foot {
+.player-tile .tile-foot,
+.display-tile .tile-foot {
   border-top: 1px solid var(--line);
   font-size: 1.05rem;
 }
@@ -298,6 +300,40 @@ canvas { display: block; touch-action: none; }
 .display-single .canvas-wrap { max-width: 90vw; max-height: 70vh; }
 .display-single .canvas-wrap.board-hidden { width: 55vw; height: 42vh; }
 .display-single img { max-width: 90vw; max-height: 65vh; object-fit: contain; }
+
+/* 全員一覧表示: 参加人数に応じてマス目(列数・行数)をJSで決め、
+   1人あたりの表示サイズが人数に応じて大きく/小さくなるようにする。
+   判定者画面の固定サイズグリッド(.player-grid / .player-tile)とは
+   別のクラスにして、投影画面だけがこの可変レイアウトになるようにしている。 */
+.display-grid {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  gap: 1em;
+}
+.display-tile {
+  background: var(--panel-bg);
+  border: 2px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+.display-tile.correct { border-color: var(--green); }
+.display-tile.incorrect { border-color: var(--red); }
+.display-tile-canvas {
+  background: #fff;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.display-tile-canvas img { width: 100%; height: 100%; object-fit: contain; }
+.display-tile-canvas canvas { width: 100%; height: 100%; }
 
 .buzz-banner {
   text-align: center;

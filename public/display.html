@@ -145,19 +145,37 @@ function render(state) {
   }
 }
 
+// 参加人数に応じて、投影画面の一覧表示のマス目（列数）を決める。
+// 人数が少ないほど1人あたりの表示が大きくなるようにする。
+function computeGridColumns(n) {
+  if (n <= 1) return 1;
+  if (n === 3) return 3;   // 3人はあえて1列（2x2で1マス余らせない）
+  if (n <= 4) return 2;    // 2人は横並び、4人は2x2
+  if (n <= 9) return 3;
+  if (n <= 16) return 4;
+  return Math.ceil(Math.sqrt(n));
+}
+
 function renderGrid(state) {
   const stage = document.getElementById('stage');
   stage.innerHTML = '';
   const grid = document.createElement('div');
-  grid.className = 'player-grid';
+  grid.className = 'display-grid';
+
+  const count = state.players.length || 1;
+  const cols = computeGridColumns(count);
+  const rows = Math.max(1, Math.ceil(count / cols));
+  grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+  grid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+
   state.players.forEach((p) => {
     const tile = document.createElement('div');
-    tile.className = 'player-tile' + (p.correct === true ? ' correct' : p.correct === false ? ' incorrect' : '');
+    tile.className = 'display-tile' + (p.correct === true ? ' correct' : p.correct === false ? ' incorrect' : '');
     const effectClass = getBuzzEffectClass(state, p.id);
     if (effectClass) tile.classList.add(effectClass);
 
     const canvasWrap = document.createElement('div');
-    canvasWrap.className = 'tile-canvas';
+    canvasWrap.className = 'display-tile-canvas';
     canvasWrap.dataset.playerId = p.id;
     fillBoardContent(canvasWrap, state, p);
 
@@ -175,7 +193,7 @@ function refreshLiveCanvas(playerId) {
   if (!latestState) return;
   const p = latestState.players.find(pl => pl.id === playerId);
   if (!p || p.imageData || !p.revealed) return; // 非公開中は更新しない
-  const wrap = document.querySelector(`.tile-canvas[data-player-id="${playerId}"]`) ||
+  const wrap = document.querySelector(`.display-tile-canvas[data-player-id="${playerId}"]`) ||
                (latestState.display.mode === 'single' && latestState.display.selectedPlayerId === playerId
                  ? document.querySelector('.display-single .canvas-wrap') : null);
   if (!wrap) return;
