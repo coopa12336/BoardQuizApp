@@ -180,28 +180,38 @@ app.post('/api/serial-simulate', (req, res) => {
 // ------------------------------------------------------------------
 // 問題ファイル(Excel/CSV/スプレッドシート書き出し等)の読み込み
 // ------------------------------------------------------------------
-// ヘッダー名の表記ゆれを吸収して、問題番号・問題文・解答・解説・作問者を拾う。
-// 該当する列が無ければ空文字のまま返す（アップロード自体は失敗させない）。
-function pickColumn(row, candidates) {
-  for (const key of Object.keys(row)) {
-    const norm = String(key).trim().toLowerCase();
-    if (candidates.includes(norm)) {
-      const v = row[key];
-      return v === undefined || v === null ? '' : String(v).trim();
+// 1行目に「問題文」「解答」などの見出しがあればそれを優先して使う。
+// 見出しが認識できない場合（見出し行が無い、文言が独自など）は、
+// 列の並び順（1列目:番号 2列目:問題文 3列目:解答 4列目:解説/コメント
+// 5列目:作問者）で読み込む。どちらの場合も1行目はラベル行として読み飛ばす。
+const QUESTION_HEADER_KEYWORDS = {
+  no: ['no', 'no.', '№', '番号', '問題番号', '#'],
+  question: ['問題', '問題文', 'question', 'q', '問'],
+  answer: ['解答', '答え', '正解', 'answer', 'a'],
+  comment: ['解説', 'コメント', '備考', 'comment', 'explanation', 'note', 'notes'],
+  author: ['作問者', '出題者', '作成者', 'author', 'writer']
+};
+
+// 1行目の各セルを見出しキーワードと突き合わせ、列番号のマップを作る。
+// どの列も見出しとして認識できなければ null を返す（＝列位置での読み込みに切り替える）。
+function detectQuestionHeaderMap(headerCells) {
+  const map = { no: -1, question: -1, answer: -1, comment: -1, author: -1 };
+  let matchedAny = false;
+  headerCells.forEach((cell, idx) => {
+    const norm = String(cell ?? '').trim().toLowerCase();
+    if (!norm) return;
+    for (const field of Object.keys(QUESTION_HEADER_KEYWORDS)) {
+      if (map[field] === -1 && QUESTION_HEADER_KEYWORDS[field].includes(norm)) {
+        map[field] = idx;
+        matchedAny = true;
+      }
     }
-  }
-  return '';
+  });
+  return matchedAny ? map : null;
 }
 
-function normalizeQuestionRow(row, idx) {
-  const no = pickColumn(row, ['no', 'no.', '№', '番号', '問題番号', '#']) || String(idx + 1);
-  return {
-    no,
-    question: pickColumn(row, ['問題', '問題文', 'question', 'q', '問']),
-    answer: pickColumn(row, ['解答', '答え', '正解', 'answer', 'a']),
-    comment: pickColumn(row, ['解説', 'コメント', '備考', 'comment', 'explanation', 'note', 'notes']),
-    author: pickColumn(row, ['作問者', '出題者', '作成者', 'author', 'writer'])
-  };
+function cellToText(v) {
+  return v === undefined || v === null ? '' : String(v).trim();
 }
 
 // Excel(.xlsx/.xls)・CSV・ODS等をまとめて受け付ける（xlsxライブラリが自動判別する）
@@ -217,14 +227,45 @@ app.post('/api/upload-questions', upload.single('file'), (req, res) => {
     const sheetName = workbook.SheetNames[0];
     if (!sheetName) return res.status(400).json({ error: 'シートが見つかりませんでした' });
     const sheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+    // header:1 で「配列の配列」として読み込み、見出し名に依存せず列位置でも扱えるようにする
+    const rawRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', blankrows: false });
 
-    const questions = rows
-      .map((row, idx) => normalizeQuestionRow(row, idx))
-      .filter((q) => q.question || q.answer); // 完全な空行は除外
+    if (!rawRows.length) {
+      return res.status(400).json({ error: 'シートにデータがありませんでした' });
+    }
+
+    const headerMap = detectQuestionHeaderMap(rawRows[0]);
+    const dataRows = rawRows.slice(1); // 1行目は見出し/ラベル行として読み飛ばす
+
+    let questions;
+    if (headerMap && (headerMap.question >= 0 || headerMap.answer >= 0)) {
+      // 見出しの列名を認識できた場合はその列番号を使う
+      questions = dataRows.map((r, idx) => ({
+        no: (headerMap.no >= 0 ? cellToText(r[headerMap.no]) : '') || String(idx + 1),
+        question: headerMap.question >= 0 ? cellToText(r[headerMap.question]) : '',
+        answer: headerMap.answer >= 0 ? cellToText(r[headerMap.answer]) : '',
+        comment: headerMap.comment >= 0 ? cellToText(r[headerMap.comment]) : '',
+        author: headerMap.author >= 0 ? cellToText(r[headerMap.author]) : ''
+      }));
+    } else {
+      // 見出しが認識できない場合は列の並び順で読み込む
+      // 1列目:番号 2列目:問題文 3列目:解答 4列目:解説/コメント 5列目:作問者
+      questions = dataRows.map((r, idx) => ({
+        no: cellToText(r[0]) || String(idx + 1),
+        question: cellToText(r[1]),
+        answer: cellToText(r[2]),
+        comment: cellToText(r[3]),
+        author: cellToText(r[4])
+      }));
+    }
+
+    questions = questions.filter((q) => q.question || q.answer); // 完全な空行は除外
 
     if (questions.length === 0) {
-      return res.status(400).json({ error: '問題を読み取れませんでした。列見出し（問題文・解答など）をご確認ください。' });
+      return res.status(400).json({
+        error: '問題を読み取れませんでした。1行目を見出し（問題文・解答など）にするか、' +
+          '1列目=番号・2列目=問題文・3列目=解答・4列目=解説の並びにしてください。'
+      });
     }
 
     room.questionBank = questions;

@@ -211,8 +211,11 @@ function renderGrid(state) {
   const count = state.players.length || 1;
   const cols = computeGridColumns(count);
   const rows = Math.max(1, Math.ceil(count / cols));
-  grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
-  grid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+  // minmax(0, 1fr) にしないと、素の 1fr は「中身の最小サイズ」までしか
+  // 縮まらないため、画像が入った瞬間にグリッドがはみ出してスクロールが
+  // 必要になってしまう（プレースホルダーの文字だけなら小さいため気づきにくい）。
+  grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+  grid.style.gridTemplateRows = `repeat(${rows}, minmax(0, 1fr))`;
 
   state.players.forEach((p) => {
     const tile = document.createElement('div');
