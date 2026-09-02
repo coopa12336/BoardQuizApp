@@ -31,6 +31,16 @@
   <div class="hint" style="text-align:center;">読み込み中…</div>
 </div>
 
+<div id="question-panel" class="question-panel" style="display:none;">
+  <div class="question-panel-no" id="qp-no"></div>
+  <div class="question-panel-question" id="qp-question"></div>
+  <div class="question-panel-answer" id="qp-answer"></div>
+  <div class="question-panel-comment" id="qp-comment"></div>
+  <div class="question-panel-author" id="qp-author"></div>
+</div>
+
+<div id="reveal-overlay-layer"></div>
+
 <script src="/socket.io/socket.io.js"></script>
 <script src="js/board-sync.js"></script>
 <script src="js/timer-sync.js"></script>
@@ -68,6 +78,40 @@ socket.on('clear_canvas', ({ playerId }) => {
 socket.on('reset_canvases', () => {
   if (latestState) latestState.players.forEach(p => BoardSync.clear(p.id));
 });
+
+// 判定者が「正誤判定を確定する」を押した瞬間に一斉に届くイベント。
+// 対象になった回答者のタイル位置に、正解=緑/不正解=赤の演出と点数を
+// 一時的なオーバーレイとして重ねて表示する（グリッドの再描画とは独立させて
+// いるので、この直後に room_state が届いてタイルが作り直されても演出は消えない）。
+socket.on('score_confirmed', ({ results }) => {
+  (results || []).forEach((r) => playScoreRevealEffect(r));
+});
+
+function playScoreRevealEffect(result) {
+  const canvasWrap = document.querySelector(`.display-tile-canvas[data-player-id="${result.playerId}"]`)
+    || document.querySelector(`.canvas-wrap[data-player-id="${result.playerId}"]`);
+  const targetEl = canvasWrap ? (canvasWrap.closest('.display-tile') || canvasWrap.closest('.display-single') || canvasWrap) : null;
+  if (!targetEl) return;
+
+  const rect = targetEl.getBoundingClientRect();
+  const layer = document.getElementById('reveal-overlay-layer');
+
+  const flash = document.createElement('div');
+  flash.className = 'reveal-flash ' + (result.correct ? 'reveal-correct' : 'reveal-incorrect');
+  flash.style.left = `${rect.left}px`;
+  flash.style.top = `${rect.top}px`;
+  flash.style.width = `${rect.width}px`;
+  flash.style.height = `${rect.height}px`;
+
+  const badge = document.createElement('div');
+  badge.className = 'reveal-badge';
+  const sign = result.points > 0 ? '+' : '';
+  badge.innerHTML = `<div class="reveal-mark">${result.correct ? '○' : '×'}</div><div class="reveal-points">${sign}${result.points}点</div>`;
+  flash.appendChild(badge);
+
+  layer.appendChild(flash);
+  setTimeout(() => flash.remove(), 1800);
+}
 
 // 早押しで押した順位(1着=1, 2着=2, ...押していなければ0)に対して、
 // 判定者が設定した演出('flash'=点滅 / 'light'=点灯 / 'none'=なし)を割り当てる
@@ -108,6 +152,7 @@ function render(state) {
   if (!state || state.roomName !== roomName) return;
   latestState = state;
   renderTimer(state.timer);
+  renderQuestionPanel(state.questionPanel);
 
   const stage = document.getElementById('stage');
   if (state.display.mode === 'single' && state.display.selectedPlayerId) {
@@ -119,6 +164,7 @@ function render(state) {
 
     const boardHolder = document.createElement('div');
     boardHolder.className = 'canvas-wrap';
+    boardHolder.dataset.playerId = p.id;
     const effectClass = getBuzzEffectClass(state, p.id);
     if (effectClass) boardHolder.classList.add(effectClass);
     fillBoardContent(boardHolder, state, p);
@@ -216,6 +262,23 @@ function renderTimer(timer) {
   TimerSync.start(timer.endsAt, (sec) => {
     el.textContent = TimerSync.format(sec);
   });
+}
+
+// 問題文・解答パネル。判定者が「SEND」した時だけ表示する
+// （非公開の間は questionPanel.current 自体がサーバーから送られてこない）。
+function renderQuestionPanel(questionPanel) {
+  const panel = document.getElementById('question-panel');
+  if (!questionPanel || !questionPanel.visible || !questionPanel.current) {
+    panel.style.display = 'none';
+    return;
+  }
+  const q = questionPanel.current;
+  document.getElementById('qp-no').textContent = q.no ? `問題 ${q.no}` : '';
+  document.getElementById('qp-question').textContent = q.question || '';
+  document.getElementById('qp-answer').textContent = q.answer ? `解答: ${q.answer}` : '';
+  document.getElementById('qp-comment').textContent = q.comment || '';
+  document.getElementById('qp-author').textContent = q.author ? `出題: ${q.author}` : '';
+  panel.style.display = 'flex';
 }
 
 function escapeHtml(s) {

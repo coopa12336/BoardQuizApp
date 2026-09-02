@@ -32,6 +32,63 @@
     </div>
 
     <div class="card" style="margin-bottom:1em;">
+      <h3 style="margin-bottom:.6em;">問題ファイルの読み込み・投影</h3>
+      <p class="hint">Excel(.xlsx)、CSV、スプレッドシートの書き出しファイルなどを読み込めます。
+        列見出しは「問題文」「解答」「解説」「コメント」「作問者」「番号」などを想定していますが、
+        多少の表記ゆれ（例: 「答え」「Answer」など）は自動で吸収します。列見出しの並び順は自由です。</p>
+      <div style="display:flex; gap:.6em; align-items:center; flex-wrap:wrap; margin-top:.8em;">
+        <input type="file" id="question-file-input" accept=".xlsx,.xls,.csv,.ods,.tsv">
+        <button id="btn-upload-questions">読み込む</button>
+        <span class="hint" id="question-upload-status"></span>
+      </div>
+
+      <div id="question-browser" style="display:none; margin-top:1.2em; padding-top:1em; border-top:1px solid var(--line);">
+        <div style="display:flex; align-items:center; gap:.6em; flex-wrap:wrap; margin-bottom:.8em;">
+          <button class="secondary" id="btn-q-prev">← 前の問題</button>
+          <span id="question-position-label" style="font-weight:700;">- / -</span>
+          <button class="secondary" id="btn-q-next">次の問題 →</button>
+          <span style="margin-left:1em;" class="hint">先頭から数えた位置を指定:</span>
+          <input type="number" id="question-jump-input" min="1" style="width:5em;">
+          <button class="secondary" id="btn-q-jump">移動</button>
+        </div>
+
+        <div class="field">
+          <label>問題文（No. <span id="q-preview-no">-</span>）</label>
+          <div class="card" id="q-preview-question" style="padding:.8em; white-space:pre-wrap;"></div>
+        </div>
+        <div class="field">
+          <label>解答</label>
+          <div class="card" id="q-preview-answer" style="padding:.8em; white-space:pre-wrap; color:var(--gold); font-weight:700;"></div>
+        </div>
+        <div class="field">
+          <label>解説・コメント（あれば）</label>
+          <div class="card" id="q-preview-comment" style="padding:.8em; white-space:pre-wrap; color:var(--text-muted);"></div>
+        </div>
+        <div class="hint" id="q-preview-author" style="margin-bottom:1em;"></div>
+
+        <div style="display:flex; gap:.6em; align-items:end; flex-wrap:wrap;">
+          <div class="field" style="margin:0;">
+            <label>投影画面での表示時間（秒・空欄なら手動で消すまで表示し続ける）</label>
+            <input type="number" id="question-autohide-input" min="1" max="3600" placeholder="例: 15" style="width:8em;">
+          </div>
+          <button class="gold" id="btn-send-question">📤 SEND（投影画面に表示）</button>
+          <button class="danger" id="btn-hide-question">投影画面から消す</button>
+        </div>
+        <div class="hint" id="question-panel-status" style="margin-top:.6em;"></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:1em; border-color:var(--gold);">
+      <h3 style="margin-bottom:.4em;">正誤判定の確定</h3>
+      <p class="hint">下の回答者タイルで○×のボタンを押しても、その場ではスコアに反映されません
+        （選んだボタンが青く光って「仮選択中」を示すだけです）。<strong>全員分を選び終えてから</strong>
+        このボタンを押すと、一斉にスコアへ反映され、投影画面でも正解/不正解ごとに演出が流れます。</p>
+      <button class="gold" id="btn-confirm-scoring" style="margin-top:.8em; font-size:1.05rem; padding:.7em 1.4em;">
+        🎬 正誤判定を確定する（演出あり）
+      </button>
+    </div>
+
+    <div class="card" style="margin-bottom:1em;">
       <h3 style="margin-bottom:.6em;">制限時間タイマー</h3>
       <p class="hint">時間になると自動的に全員の回答をロックします（下の「回答をロックする」を押すのと同じ動作です）。</p>
       <div style="display:flex; gap:.6em; align-items:end; flex-wrap:wrap; margin-top:.8em;">
@@ -148,6 +205,8 @@ document.getElementById('room-tag').textContent = roomName;
 
 const socket = io();
 let latestState = null;
+let questionBank = [];
+let currentQuestionIndex = -1;
 
 socket.on('connect', () => {
   socket.emit('join_room', { roomName, password, role: 'judge' }, (res) => {
@@ -156,6 +215,12 @@ socket.on('connect', () => {
       return;
     }
     document.getElementById('main-area').style.display = 'block';
+    if (Array.isArray(res.questionBank) && res.questionBank.length) {
+      questionBank = res.questionBank;
+      currentQuestionIndex = 0;
+      showQuestionBrowser();
+      renderQuestionPreview();
+    }
     render(res.state);
   });
 });
@@ -180,6 +245,7 @@ document.getElementById('btn-reset-buzz').onclick = () => socket.emit('judge_res
 document.getElementById('btn-display-grid').onclick = () => socket.emit('judge_set_display', { mode: 'grid' });
 document.getElementById('btn-reveal-all').onclick = () => socket.emit('judge_set_reveal_all', { revealed: true });
 document.getElementById('btn-hide-all').onclick = () => socket.emit('judge_set_reveal_all', { revealed: false });
+document.getElementById('btn-confirm-scoring').onclick = () => socket.emit('judge_confirm_scoring');
 
 document.getElementById('btn-timer-start').onclick = () => {
   const seconds = Number(document.getElementById('timer-seconds-input').value);
@@ -187,6 +253,89 @@ document.getElementById('btn-timer-start').onclick = () => {
   socket.emit('judge_start_timer', { seconds });
 };
 document.getElementById('btn-timer-stop').onclick = () => socket.emit('judge_stop_timer');
+
+// --- 問題ファイルの読み込み・ブラウズ・SEND ---
+document.getElementById('btn-upload-questions').onclick = async () => {
+  const fileInput = document.getElementById('question-file-input');
+  const statusEl = document.getElementById('question-upload-status');
+  const file = fileInput.files[0];
+  if (!file) { statusEl.textContent = 'ファイルを選択してください'; return; }
+
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('roomName', roomName);
+
+  statusEl.textContent = '読み込み中…';
+  try {
+    const res = await fetch('/api/upload-questions', { method: 'POST', body: formData });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      statusEl.textContent = `読み込み失敗: ${data.error || res.statusText}`;
+      return;
+    }
+    questionBank = data.questions;
+    currentQuestionIndex = 0;
+    statusEl.textContent = `${data.count}件の問題を読み込みました`;
+    showQuestionBrowser();
+    renderQuestionPreview();
+  } catch (e) {
+    statusEl.textContent = '読み込み失敗: ' + e.message;
+  }
+};
+
+function showQuestionBrowser() {
+  document.getElementById('question-browser').style.display = questionBank.length ? 'block' : 'none';
+}
+
+function renderQuestionPreview() {
+  if (!questionBank.length || currentQuestionIndex < 0) return;
+  const q = questionBank[currentQuestionIndex];
+  document.getElementById('question-position-label').textContent = `${currentQuestionIndex + 1} / ${questionBank.length}`;
+  document.getElementById('q-preview-no').textContent = q.no || String(currentQuestionIndex + 1);
+  document.getElementById('q-preview-question').textContent = q.question || '(問題文なし)';
+  document.getElementById('q-preview-answer').textContent = q.answer || '(解答なし)';
+  document.getElementById('q-preview-comment').textContent = q.comment || '';
+  document.getElementById('q-preview-author').textContent = q.author ? `出題: ${q.author}` : '';
+  document.getElementById('btn-q-prev').disabled = currentQuestionIndex <= 0;
+  document.getElementById('btn-q-next').disabled = currentQuestionIndex >= questionBank.length - 1;
+}
+
+document.getElementById('btn-q-prev').onclick = () => {
+  if (currentQuestionIndex > 0) { currentQuestionIndex--; renderQuestionPreview(); }
+};
+document.getElementById('btn-q-next').onclick = () => {
+  if (currentQuestionIndex < questionBank.length - 1) { currentQuestionIndex++; renderQuestionPreview(); }
+};
+document.getElementById('btn-q-jump').onclick = () => {
+  const n = Number(document.getElementById('question-jump-input').value);
+  if (!Number.isInteger(n) || n < 1 || n > questionBank.length) {
+    alert(`1〜${questionBank.length} の範囲で指定してください`);
+    return;
+  }
+  currentQuestionIndex = n - 1;
+  renderQuestionPreview();
+};
+
+document.getElementById('btn-send-question').onclick = () => {
+  if (currentQuestionIndex < 0 || !questionBank[currentQuestionIndex]) return;
+  const autoHideSeconds = document.getElementById('question-autohide-input').value;
+  socket.emit('judge_send_question', {
+    question: questionBank[currentQuestionIndex],
+    autoHideSeconds: autoHideSeconds === '' ? null : Number(autoHideSeconds)
+  });
+};
+document.getElementById('btn-hide-question').onclick = () => socket.emit('judge_hide_question');
+
+function renderQuestionPanelStatus(questionPanel) {
+  const el = document.getElementById('question-panel-status');
+  if (!questionPanel || !questionPanel.visible) {
+    el.textContent = '投影画面には表示されていません';
+    return;
+  }
+  el.textContent = questionPanel.autoHideSeconds
+    ? `投影画面に表示中（${questionPanel.autoHideSeconds}秒後に自動で消えます）`
+    : '投影画面に表示中（手動で消すまで表示され続けます）';
+}
 
 function renderTimer(timer) {
   const el = document.getElementById('timer-display');
@@ -231,7 +380,7 @@ function render(state) {
 
     const head = document.createElement('div');
     head.className = 'tile-head';
-    head.innerHTML = `<span>${escapeHtml(p.name)} <span style="color:var(--gold); font-weight:900;">${p.score || 0}点</span></span><span style="display:flex; align-items:center; gap:.4em;"><span title="${p.revealed ? '投影画面に公開中' : '投影画面には非公開'}">${p.revealed ? '👁' : '🙈'}</span><span title="${p.locked ? 'ロック中' : '記入可能'}">${p.locked ? '🔒' : '✏️'}</span><span class="status-dot ${p.hasSubmitted ? 'on' : ''}"></span></span>`;
+    head.innerHTML = `<span>${escapeHtml(p.name)} <span style="color:var(--gold); font-weight:900;">${p.score || 0}点</span></span><span style="display:flex; align-items:center; gap:.4em;">${p.pendingRuleId ? '<span title="仮選択中(未確定)" style="color:var(--blue);">●選択中</span>' : ''}<span title="${p.revealed ? '投影画面に公開中' : '投影画面には非公開'}">${p.revealed ? '👁' : '🙈'}</span><span title="${p.locked ? 'ロック中' : '記入可能'}">${p.locked ? '🔒' : '✏️'}</span><span class="status-dot ${p.hasSubmitted ? 'on' : ''}"></span></span>`;
 
     const canvasWrap = document.createElement('div');
     canvasWrap.className = 'tile-canvas';
@@ -275,7 +424,9 @@ function render(state) {
 
     // 得点ルールごとのボタン（「正解/不正解」の2択ではなく、設定済みの
     // 全パターンをボタンとして直接選べるようにする。押した順位に一致する
-    // ボタンには薄い枠で「おすすめ」を示すが、どのボタンでも選択できる）
+    // ボタンには薄い破線の枠で「おすすめ」を示すが、どのボタンでも選択できる。
+    // ここではまだスコアに反映しない「仮選択」のみ行い、実際の反映は
+    // 「正誤判定を確定する」ボタンでまとめて行う。
     const ruleGrid = document.createElement('div');
     ruleGrid.className = 'tile-rule-grid';
     const buzzIdx = state.buzzOrder.findIndex((b) => b.playerId === p.id);
@@ -284,7 +435,8 @@ function render(state) {
     sortedRules.forEach((rule) => {
       const btn = document.createElement('button');
       btn.className = 'rule-btn';
-      if (p.appliedRuleId === rule.id) btn.classList.add('applied');
+      if (p.pendingRuleId === rule.id) btn.classList.add('pending');
+      else if (p.appliedRuleId === rule.id) btn.classList.add('applied');
       else if (rule.rank === actualRank) btn.classList.add('suggested');
       btn.innerHTML = `
         <span class="rule-btn-icon">${scoreRuleIconHTML(rule)}</span>
@@ -294,7 +446,7 @@ function render(state) {
             ${rule.correct ? '○ 正解' : '× 不正解'}　${rule.points >= 0 ? '+' : ''}${rule.points}点
           </span>
         </span>`;
-      btn.onclick = () => socket.emit('judge_apply_score_rule', { playerId: p.id, ruleId: rule.id });
+      btn.onclick = () => socket.emit('judge_select_score_rule', { playerId: p.id, ruleId: rule.id });
       ruleGrid.appendChild(btn);
     });
 
@@ -330,6 +482,7 @@ function render(state) {
   renderScoreRules(state.scoreRules || []);
   renderBuzzEffectConfig(state.buzzEffect);
   renderTimer(state.timer);
+  renderQuestionPanelStatus(state.questionPanel);
 }
 
 // --- 投影画面での早押し演出設定 ---

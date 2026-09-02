@@ -1,6 +1,6 @@
 // server.js
 // 早押し・ボードクイズ用サーバー
-// - Express: 静的ファイル配信 + 早押しテスト用API
+// - Express: 静的ファイル配信 + 早押しテスト用API + 問題ファイルのアップロードAPI
 // - Socket.io: 部屋管理、手書きボードのリアルタイム同期、早押し判定のブロードキャスト
 // - Arduinoとのシリアル通信は、投影PCのブラウザ側(Web Serial API)で行う。
 //   このサーバー自体はシリアルポートに一切触れないため、クラウドにそのまま
@@ -10,12 +10,15 @@ const express = require('express');
 const http = require('http');
 const path = require('path');
 const { Server } = require('socket.io');
+const multer = require('multer');
+const XLSX = require('xlsx');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   maxHttpBufferSize: 5e6 // 手書き画像(dataURL)送信のため上限を少し広げる
 });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -27,7 +30,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 //   password: string,
 //   judgeSocketId: string|null,
 //   players: Map(socketId => { name, buzzerId, hasSubmitted, imageData, correct,
-//                               score, lastDelta, appliedRuleId, locked, revealed }),
+//                               score, lastDelta, appliedRuleId, pendingRuleId, locked, revealed }),
 //   phase: 'idle' | 'writing' | 'locked',
 //   buzzOrder: [{ buzzerId, playerId, name, ts }],
 //   buzzAccepting: boolean,
@@ -36,6 +39,10 @@ app.use(express.static(path.join(__dirname, 'public')));
 //   buzzEffect: { first: 'flash'|'light'|'none', others: 'flash'|'light'|'none' },
 //   timer: { durationSec: number, remainingMs: number, running: boolean, endsAt: number|null },
 //   _timerHandle: NodeJS.Timeout|null (公開状態には含めない)
+//   questionBank: [{ no, question, answer, comment, author }] (判定者にのみ渡す。全体publicStateには含めない)
+//   questionPanel: { visible: boolean, current: {no,question,answer,comment,author}|null,
+//                     autoHideSeconds: number|null, hideAt: number|null }
+//   _questionHideHandle: NodeJS.Timeout|null (公開状態には含めない)
 // }
 const rooms = new Map();
 
@@ -56,6 +63,10 @@ function defaultBuzzEffect() {
   return { first: 'flash', others: 'light' };
 }
 
+function defaultQuestionPanel() {
+  return { visible: false, current: null, autoHideSeconds: null, hideAt: null };
+}
+
 const VALID_BUZZ_EFFECTS = new Set(['flash', 'light', 'none']);
 
 function getRoomPublicState(roomName) {
@@ -71,6 +82,16 @@ function getRoomPublicState(roomName) {
     scoreRules: room.scoreRules,
     buzzEffect: room.buzzEffect,
     timer: room.timer ? { durationSec: room.timer.durationSec, endsAt: room.timer.endsAt } : null,
+    // 問題パネルは非公開(visible:false)の間、本文を一切含めない
+    // （判定者以外のクライアントに送信データとして渡らないようにするため）。
+    questionPanel: room.questionPanel && room.questionPanel.visible
+      ? {
+          visible: true,
+          current: room.questionPanel.current,
+          autoHideSeconds: room.questionPanel.autoHideSeconds,
+          hideAt: room.questionPanel.hideAt
+        }
+      : { visible: false, current: null, autoHideSeconds: room.questionPanel ? room.questionPanel.autoHideSeconds : null, hideAt: null },
     players: Array.from(room.players.entries()).map(([id, p]) => ({
       id,
       name: p.name,
@@ -81,6 +102,7 @@ function getRoomPublicState(roomName) {
       score: p.score || 0,
       lastDelta: p.lastDelta || 0,
       appliedRuleId: p.appliedRuleId || null,
+      pendingRuleId: p.pendingRuleId || null,
       locked: !!p.locked,
       revealed: !!p.revealed
     }))
@@ -108,6 +130,14 @@ function clearRoomTimer(room) {
     room._timerHandle = null;
   }
   room.timer = null;
+}
+
+// 問題パネルの自動非表示タイマーを止める
+function clearQuestionHideTimer(room) {
+  if (room._questionHideHandle) {
+    clearTimeout(room._questionHideHandle);
+    room._questionHideHandle = null;
+  }
 }
 
 // ------------------------------------------------------------------
@@ -148,6 +178,63 @@ app.post('/api/serial-simulate', (req, res) => {
 });
 
 // ------------------------------------------------------------------
+// 問題ファイル(Excel/CSV/スプレッドシート書き出し等)の読み込み
+// ------------------------------------------------------------------
+// ヘッダー名の表記ゆれを吸収して、問題番号・問題文・解答・解説・作問者を拾う。
+// 該当する列が無ければ空文字のまま返す（アップロード自体は失敗させない）。
+function pickColumn(row, candidates) {
+  for (const key of Object.keys(row)) {
+    const norm = String(key).trim().toLowerCase();
+    if (candidates.includes(norm)) {
+      const v = row[key];
+      return v === undefined || v === null ? '' : String(v).trim();
+    }
+  }
+  return '';
+}
+
+function normalizeQuestionRow(row, idx) {
+  const no = pickColumn(row, ['no', 'no.', '№', '番号', '問題番号', '#']) || String(idx + 1);
+  return {
+    no,
+    question: pickColumn(row, ['問題', '問題文', 'question', 'q', '問']),
+    answer: pickColumn(row, ['解答', '答え', '正解', 'answer', 'a']),
+    comment: pickColumn(row, ['解説', 'コメント', '備考', 'comment', 'explanation', 'note', 'notes']),
+    author: pickColumn(row, ['作問者', '出題者', '作成者', 'author', 'writer'])
+  };
+}
+
+// Excel(.xlsx/.xls)・CSV・ODS等をまとめて受け付ける（xlsxライブラリが自動判別する）
+app.post('/api/upload-questions', upload.single('file'), (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'ファイルが見つかりません' });
+    const { roomName } = req.body;
+    if (!roomName) return res.status(400).json({ error: 'roomName は必須です' });
+    const room = rooms.get(roomName);
+    if (!room) return res.status(404).json({ error: '指定された部屋が存在しません' });
+
+    const workbook = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    if (!sheetName) return res.status(400).json({ error: 'シートが見つかりませんでした' });
+    const sheet = workbook.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+    const questions = rows
+      .map((row, idx) => normalizeQuestionRow(row, idx))
+      .filter((q) => q.question || q.answer); // 完全な空行は除外
+
+    if (questions.length === 0) {
+      return res.status(400).json({ error: '問題を読み取れませんでした。列見出し（問題文・解答など）をご確認ください。' });
+    }
+
+    room.questionBank = questions;
+    res.json({ ok: true, count: questions.length, questions });
+  } catch (e) {
+    res.status(500).json({ error: 'ファイルの読み込みに失敗しました: ' + e.message });
+  }
+});
+
+// ------------------------------------------------------------------
 // Socket.io イベント
 // ------------------------------------------------------------------
 io.on('connection', (socket) => {
@@ -168,7 +255,10 @@ io.on('connection', (socket) => {
       scoreRules: defaultScoreRules(),
       buzzEffect: defaultBuzzEffect(),
       timer: null,
-      _timerHandle: null
+      _timerHandle: null,
+      questionBank: [],
+      questionPanel: defaultQuestionPanel(),
+      _questionHideHandle: null
     });
     cb({ ok: true });
   });
@@ -192,6 +282,7 @@ io.on('connection', (socket) => {
         score: 0,
         lastDelta: 0,
         appliedRuleId: null,
+        pendingRuleId: null,
         locked: room.phase !== 'writing',
         revealed: false
       });
@@ -200,7 +291,14 @@ io.on('connection', (socket) => {
 
     joinedRoom = roomName;
     socket.join(roomName);
-    cb({ ok: true, role, state: getRoomPublicState(roomName) });
+    cb({
+      ok: true,
+      role,
+      state: getRoomPublicState(roomName),
+      // 判定者が読み込んだ問題一覧は、判定者自身にだけ返す
+      // （部屋の公開状態(getRoomPublicState)には含めず、他クライアントへは渡さない）
+      questionBank: role === 'judge' ? (room.questionBank || []) : undefined
+    });
     broadcastRoomState(roomName);
   });
 
@@ -258,6 +356,7 @@ io.on('connection', (socket) => {
       p.correct = null;
       p.lastDelta = 0; // 前の問題の加減点効果はリセット（累計スコア自体は維持）
       p.appliedRuleId = null; // 前の問題でどのルールを選んだかの記録もリセット
+      p.pendingRuleId = null; // 仮選択中の判定もリセット
       p.locked = false; // 個別ロックも含めて全員分を解除
       p.revealed = false; // 投影画面への公開状態もリセット（次の問題は非公開から開始）
     }
@@ -335,24 +434,53 @@ io.on('connection', (socket) => {
     broadcastRoomState(joinedRoom);
   });
 
-  // 正誤判定。「正解/不正解」の2択ではなく、設定済みの得点ルールの中から
-  // 判定者が直接どれに該当するかを選ぶ（例: 押して1着で正解、押さずに不正解、など）。
-  // やり直した場合は前回の加減点分を打ち消してから再計算するので、
-  // 何度選び直しても累計スコアはズレない。
-  socket.on('judge_apply_score_rule', ({ playerId, ruleId }) => {
+  // 正誤判定ボタンは「即時反映」ではなく「仮選択」だけを行う。
+  // 同じボタンをもう一度押すと仮選択を取り消せる（未選択に戻る）。
+  // 実際にスコアへ反映され、投影画面の演出が発生するのは
+  // 「正誤判定を確定する」(judge_confirm_scoring)が押されたタイミング。
+  socket.on('judge_select_score_rule', ({ playerId, ruleId }) => {
     if (role !== 'judge' || !joinedRoom) return;
     const room = rooms.get(joinedRoom);
     if (!room || !room.players.has(playerId)) return;
-    const rule = (room.scoreRules || []).find((r) => r.id === ruleId);
-    if (!rule) return;
     const player = room.players.get(playerId);
-
-    player.score = (player.score || 0) - (player.lastDelta || 0) + rule.points;
-    player.lastDelta = rule.points;
-    player.correct = rule.correct;
-    player.appliedRuleId = ruleId;
-
+    player.pendingRuleId = (player.pendingRuleId === ruleId) ? null : ruleId;
     broadcastRoomState(joinedRoom);
+  });
+
+  // 仮選択済みの全員分をまとめて確定する。
+  // ここで初めてスコアに反映され、投影画面へ「score_confirmed」イベントを送って
+  // 正解/不正解ごとに異なる演出を一斉に再生させる。
+  // やり直した場合（前回すでに確定済みの人を選び直した場合）は前回の加減点分を
+  // 打ち消してから再計算するので、何度確定し直しても累計スコアはズレない。
+  socket.on('judge_confirm_scoring', () => {
+    if (role !== 'judge' || !joinedRoom) return;
+    const room = rooms.get(joinedRoom);
+    if (!room) return;
+
+    const results = [];
+    for (const [playerId, player] of room.players.entries()) {
+      if (!player.pendingRuleId) continue;
+      const rule = (room.scoreRules || []).find((r) => r.id === player.pendingRuleId);
+      if (!rule) { player.pendingRuleId = null; continue; }
+
+      player.score = (player.score || 0) - (player.lastDelta || 0) + rule.points;
+      player.lastDelta = rule.points;
+      player.correct = rule.correct;
+      player.appliedRuleId = rule.id;
+      player.pendingRuleId = null;
+
+      results.push({
+        playerId,
+        name: player.name,
+        correct: rule.correct,
+        points: rule.points,
+        newScore: player.score
+      });
+    }
+
+    if (results.length === 0) return; // 誰も仮選択していなければ何もしない
+    broadcastRoomState(joinedRoom);
+    io.to(joinedRoom).emit('score_confirmed', { results });
   });
 
   // 得点ルールの編集（判定者画面から数値・ラベルをまとめて上書き保存）
@@ -406,6 +534,7 @@ io.on('connection', (socket) => {
       p.score = 0;
       p.lastDelta = 0;
       p.appliedRuleId = null;
+      p.pendingRuleId = null;
     }
     broadcastRoomState(joinedRoom);
   });
@@ -448,6 +577,53 @@ io.on('connection', (socket) => {
     if (!room) return;
     room.buzzOrder = [];
     room.buzzAccepting = true;
+    broadcastRoomState(joinedRoom);
+  });
+
+  // 問題文・解答・解説などを投影画面に送る（SEND）。
+  // autoHideSecondsを指定すると、その秒数後に自動で非表示にする。
+  socket.on('judge_send_question', ({ question, autoHideSeconds }) => {
+    if (role !== 'judge' || !joinedRoom) return;
+    const room = rooms.get(joinedRoom);
+    if (!room || !question) return;
+
+    clearQuestionHideTimer(room);
+    const sec = Number(autoHideSeconds);
+    const validSec = (Number.isFinite(sec) && sec > 0) ? Math.min(sec, 3600) : null;
+
+    room.questionPanel = {
+      visible: true,
+      current: {
+        no: String(question.no || '').slice(0, 30),
+        question: String(question.question || '').slice(0, 4000),
+        answer: String(question.answer || '').slice(0, 2000),
+        comment: String(question.comment || '').slice(0, 4000),
+        author: String(question.author || '').slice(0, 200)
+      },
+      autoHideSeconds: validSec,
+      hideAt: validSec ? Date.now() + validSec * 1000 : null
+    };
+
+    if (validSec) {
+      room._questionHideHandle = setTimeout(() => {
+        const r = rooms.get(joinedRoom);
+        if (!r) return;
+        r._questionHideHandle = null;
+        r.questionPanel = { ...r.questionPanel, visible: false, current: null, hideAt: null };
+        broadcastRoomState(joinedRoom);
+      }, validSec * 1000);
+    }
+
+    broadcastRoomState(joinedRoom);
+  });
+
+  // 投影画面から問題パネルを手動で消す
+  socket.on('judge_hide_question', () => {
+    if (role !== 'judge' || !joinedRoom) return;
+    const room = rooms.get(joinedRoom);
+    if (!room) return;
+    clearQuestionHideTimer(room);
+    room.questionPanel = { ...room.questionPanel, visible: false, current: null, hideAt: null };
     broadcastRoomState(joinedRoom);
   });
 
