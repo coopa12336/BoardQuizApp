@@ -9,21 +9,51 @@
 <body>
 <div class="topbar">
   <div class="brand">📽 投影画面</div>
-  <div class="room-tag" id="room-tag">-</div>
+  <div style="display:flex; align-items:center; gap:.6em;">
+    <button class="secondary" id="btn-open-settings" style="padding:.4em .7em; font-size:1.1rem;" title="早押し機の設定">⚙</button>
+    <div class="room-tag" id="room-tag">-</div>
+  </div>
 </div>
 
-<details class="card" id="arduino-panel" style="margin:1em 1.2em 0;">
-  <summary style="cursor:pointer; font-weight:700;">早押し機（Arduino）を使う場合はこちら（任意・無くても利用できます）</summary>
-  <div style="display:flex; align-items:center; gap:.8em; flex-wrap:wrap; margin-top:.8em;">
-    <button class="secondary" id="btn-arduino-connect">接続する</button>
-    <button class="danger" id="btn-arduino-disconnect">切断</button>
-    <span class="hint" id="arduino-status">未接続</span>
+<div id="settings-overlay" class="modal-overlay" style="display:none;">
+  <div class="modal-card" style="max-width:560px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:.8em;">
+      <h3 style="margin:0;">早押し機の設定</h3>
+      <button class="secondary" id="btn-close-settings" style="padding:.3em .8em;">閉じる</button>
+    </div>
+
+    <div class="hint" id="arduino-support-warning" style="display:none; margin-bottom:.8em;">
+      このブラウザ・端末はWeb Serial API未対応のため、早押し機との接続機能は使えません
+      （パソコン版のChromeまたはEdgeのみ対応。投影画面そのものは通常どおり使えます）。
+    </div>
+
+    <div style="display:flex; align-items:center; gap:.6em; flex-wrap:wrap;">
+      <button class="secondary" id="btn-arduino-connect">接続する</button>
+      <button class="danger" id="btn-arduino-disconnect">切断</button>
+      <span class="hint" id="arduino-status">未接続</span>
+    </div>
+
+    <div style="margin-top:1.2em; padding-top:1em; border-top:1px solid var(--line);">
+      <h4 style="margin:0 0 .4em;">ボタンの割り当て（機種を問わず使えます）</h4>
+      <p class="hint">お使いの早押し機がどんな文字列を送ってくるか分からなくても構いません。
+        下で席番号（回答者が入室時に入力した番号）を指定して「学習開始」を押し、その席の人が
+        使う実物のボタンを押してください。受信した内容がそのまま自動で登録されます。</p>
+
+      <div style="display:flex; gap:.6em; align-items:end; flex-wrap:wrap; margin-top:.8em;">
+        <div class="field" style="margin:0;">
+          <label>席番号</label>
+          <input type="number" id="learn-buzzer-id-input" min="1" style="width:6em;">
+        </div>
+        <button class="gold" id="btn-start-learn">学習開始</button>
+        <button class="secondary" id="btn-cancel-learn" style="display:none;">キャンセル</button>
+      </div>
+      <div class="hint" id="learn-status" style="margin-top:.6em;"></div>
+
+      <div id="signal-map-list" style="margin-top:1em;"></div>
+      <div class="hint" id="unmapped-signal-status" style="margin-top:.8em; color:var(--gold);"></div>
+    </div>
   </div>
-  <div class="hint" id="arduino-support-warning" style="display:none;">
-    このブラウザ・端末はWeb Serial API未対応のため、Arduino接続機能は使えません
-    （パソコン版のChromeまたはEdgeのみ対応。投影画面そのものは通常どおり使えます）。
-  </div>
-</details>
+</div>
 
 <div id="timer-display" style="text-align:center; font-size:3rem; font-weight:900; font-variant-numeric:tabular-nums; color:var(--gold); min-height:1.2em; margin-top:.6em;"></div>
 
@@ -44,6 +74,7 @@
 <script src="/socket.io/socket.io.js"></script>
 <script src="js/board-sync.js"></script>
 <script src="js/timer-sync.js"></script>
+<script src="js/question-text.js"></script>
 <script>
 const params = new URLSearchParams(window.location.search);
 const roomName = params.get('room');
@@ -153,6 +184,8 @@ function render(state) {
   latestState = state;
   renderTimer(state.timer);
   renderQuestionPanel(state.questionPanel);
+  renderSignalMapList(state.buzzerSignalMap);
+  renderLearnStatus(state.pendingLearnTarget);
 
   const stage = document.getElementById('stage');
   if (state.display.mode === 'single' && state.display.selectedPlayerId) {
@@ -277,7 +310,7 @@ function renderQuestionPanel(questionPanel) {
   }
   const q = questionPanel.current;
   document.getElementById('qp-no').textContent = q.no ? `問題 ${q.no}` : '';
-  document.getElementById('qp-question').textContent = q.question || '';
+  document.getElementById('qp-question').innerHTML = renderSplitQuestionHTML(q.question || '', escapeHtml);
   document.getElementById('qp-answer').textContent = q.answer ? `解答: ${q.answer}` : '';
   document.getElementById('qp-comment').textContent = q.comment || '';
   document.getElementById('qp-author').textContent = q.author ? `出題: ${q.author}` : '';
@@ -287,6 +320,14 @@ function renderQuestionPanel(questionPanel) {
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
 }
+
+// --- 設定モーダルの開閉 ---
+document.getElementById('btn-open-settings').onclick = () => {
+  document.getElementById('settings-overlay').style.display = 'flex';
+};
+document.getElementById('btn-close-settings').onclick = () => {
+  document.getElementById('settings-overlay').style.display = 'none';
+};
 
 // --- Arduino早押し機との接続 (Web Serial API) ---
 // このAPIはPC版Chrome/Edgeでのみ動作し、かつ「セキュアコンテキスト」
@@ -348,10 +389,20 @@ async function readSerialLoop() {
 }
 
 function handleSerialLine(line) {
-  const buzzerId = parseBuzzerIdFromLine(line);
-  if (buzzerId === null) return;
-  socket.emit('client_buzz', { buzzerId });
-  document.getElementById('arduino-status').textContent = `#${buzzerId} を受信 (${new Date().toLocaleTimeString()})`;
+  if (!line) return;
+
+  // 既知の機種のフォーマットはそのまま高速パスで処理する（学習不要）
+  const knownBuzzerId = parseBuzzerIdFromLine(line);
+  if (knownBuzzerId !== null) {
+    socket.emit('client_buzz', { buzzerId: knownBuzzerId });
+    document.getElementById('arduino-status').textContent = `#${knownBuzzerId} を受信 (${new Date().toLocaleTimeString()})`;
+    return;
+  }
+
+  // 未知の形式は、サーバー側の対応表(buzzerSignalMap)・学習モードにそのまま委ねる
+  // （学習モード中ならサーバーが登録し、対応表にあれば自動でrecordBuzzされる）
+  socket.emit('client_raw_signal', { signal: line });
+  document.getElementById('arduino-status').textContent = `信号を受信: ${line}`;
 }
 
 // 対応フォーマット:
@@ -359,6 +410,7 @@ function handleSerialLine(line) {
 //     "ButtonRank<着順>:<ボタン番号>" 例: "ButtonRank1:3" → 3番のボタンが1着
 //  2) 自作の簡易早押し機形式: "BUZZ,<ボタン番号>" 例: "BUZZ,3"
 // どちらの形式が届いても自動判別して処理します。
+// これらに当てはまらない機種は、下の「ボタンの割り当て」機能で学習させてください。
 function parseBuzzerIdFromLine(line) {
   let m = line.match(/ButtonRank\d+:(\d+)/i);
   if (m) return Number(m[1]);
@@ -366,6 +418,65 @@ function parseBuzzerIdFromLine(line) {
   if (m) return Number(m[1]);
   return null;
 }
+
+// --- ボタンの割り当て（機種を問わない汎用の学習機能） ---
+// 対応表(buzzerSignalMap)・学習モードの状態はサーバー側で管理されており、
+// room_state に載って全クライアントに配信される。ここでは表示と操作だけを行う。
+socket.on('signal_learned', ({ signal, buzzerId }) => {
+  document.getElementById('learn-status').textContent = `「${signal}」を ${buzzerId}番 として登録しました`;
+});
+socket.on('unmapped_signal', ({ signal }) => {
+  document.getElementById('unmapped-signal-status').textContent =
+    `未割り当ての信号を受信しました: 「${signal}」（下の「学習開始」でこの信号を割り当てできます）`;
+});
+
+function renderSignalMapList(buzzerSignalMap) {
+  const list = document.getElementById('signal-map-list');
+  const entries = buzzerSignalMap || [];
+  if (!entries.length) {
+    list.innerHTML = '<div class="hint">まだ何も割り当てられていません</div>';
+    return;
+  }
+  list.innerHTML = '';
+  entries.forEach(({ signal, buzzerId }) => {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex; align-items:center; gap:.6em; padding:.4em .2em; border-top:1px solid var(--line);';
+    row.innerHTML = `
+      <span style="flex:1; font-family:monospace; word-break:break-all;">${escapeHtml(signal)}</span>
+      <span style="color:var(--gold); font-weight:900;">→ ${buzzerId}番</span>
+    `;
+    const delBtn = document.createElement('button');
+    delBtn.className = 'danger';
+    delBtn.textContent = '削除';
+    delBtn.style.cssText = 'padding:.3em .7em; font-size:.8rem;';
+    delBtn.onclick = () => socket.emit('remove_signal_mapping', { signal });
+    row.appendChild(delBtn);
+    list.appendChild(row);
+  });
+}
+
+function renderLearnStatus(pendingLearnTarget) {
+  const startBtn = document.getElementById('btn-start-learn');
+  const cancelBtn = document.getElementById('btn-cancel-learn');
+  if (pendingLearnTarget !== null && pendingLearnTarget !== undefined) {
+    startBtn.disabled = true;
+    cancelBtn.style.display = 'inline-block';
+    document.getElementById('learn-status').textContent = `${pendingLearnTarget}番として登録します。実物のボタンを押してください…`;
+  } else {
+    startBtn.disabled = false;
+    cancelBtn.style.display = 'none';
+  }
+}
+
+document.getElementById('btn-start-learn').onclick = () => {
+  const n = Number(document.getElementById('learn-buzzer-id-input').value);
+  if (!Number.isInteger(n) || n < 1) { alert('1以上の整数で席番号を入力してください'); return; }
+  socket.emit('start_learn_signal', { buzzerId: n });
+};
+document.getElementById('btn-cancel-learn').onclick = () => {
+  socket.emit('cancel_learn_signal');
+  document.getElementById('learn-status').textContent = '学習をキャンセルしました';
+};
 </script>
 </body>
 </html>

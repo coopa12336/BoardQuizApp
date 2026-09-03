@@ -53,8 +53,16 @@
         </div>
 
         <div class="field">
-          <label>問題文（No. <span id="q-preview-no">-</span>）</label>
-          <div class="card" id="q-preview-question" style="padding:.8em; white-space:pre-wrap;"></div>
+          <label>問題文（No. <span id="q-preview-no">-</span>） — 編集できます。早押しボタンが
+            押された位置に「/」を入れると、投影画面でそこより前が黄色・後ろが白色で表示されます</label>
+          <textarea id="q-edit-question" rows="4" style="width:100%; white-space:pre-wrap;"></textarea>
+          <div style="display:flex; gap:.6em; align-items:center; margin-top:.4em; flex-wrap:wrap;">
+            <button class="secondary" id="btn-insert-slash" style="font-size:.85rem; padding:.4em .8em;">
+              🔴 カーソル位置に「/」を挿入（押された場所を記録）
+            </button>
+            <span class="hint">プレビュー ↓（実際の投影画面での色分け）</span>
+          </div>
+          <div class="card" id="q-color-preview" style="padding:.8em; white-space:pre-wrap; margin-top:.4em;"></div>
         </div>
         <div class="field">
           <label>解答</label>
@@ -75,6 +83,11 @@
           <button class="danger" id="btn-hide-question">投影画面から消す</button>
         </div>
         <div class="hint" id="question-panel-status" style="margin-top:.6em;"></div>
+
+        <details style="margin-top:1.2em; padding-top:.8em; border-top:1px solid var(--line);">
+          <summary style="cursor:pointer; font-weight:700;">📜 SEND履歴を見る</summary>
+          <div id="question-history-list" style="margin-top:.8em;"></div>
+        </details>
       </div>
     </div>
 
@@ -192,6 +205,7 @@
 <script src="/socket.io/socket.io.js"></script>
 <script src="js/board-sync.js"></script>
 <script src="js/timer-sync.js"></script>
+<script src="js/question-text.js"></script>
 <script>
 const params = new URLSearchParams(window.location.search);
 const roomName = params.get('room');
@@ -292,13 +306,44 @@ function renderQuestionPreview() {
   const q = questionBank[currentQuestionIndex];
   document.getElementById('question-position-label').textContent = `${currentQuestionIndex + 1} / ${questionBank.length}`;
   document.getElementById('q-preview-no').textContent = q.no || String(currentQuestionIndex + 1);
-  document.getElementById('q-preview-question').textContent = q.question || '(問題文なし)';
+  document.getElementById('q-edit-question').value = q.question || '';
   document.getElementById('q-preview-answer').textContent = q.answer || '(解答なし)';
   document.getElementById('q-preview-comment').textContent = q.comment || '';
   document.getElementById('q-preview-author').textContent = q.author ? `出題: ${q.author}` : '';
   document.getElementById('btn-q-prev').disabled = currentQuestionIndex <= 0;
   document.getElementById('btn-q-next').disabled = currentQuestionIndex >= questionBank.length - 1;
+  renderQuestionColorPreview();
 }
+
+// 問題文のプレビュー欄を、実際に投影画面で表示される色分け（「/」より前=黄色、
+// 後ろ=白色）と同じ見た目で表示する。編集するたびに呼び出す。
+function renderQuestionColorPreview() {
+  const text = document.getElementById('q-edit-question').value;
+  document.getElementById('q-color-preview').innerHTML = renderSplitQuestionHTML(text, escapeHtml);
+}
+
+// テキストエリアを編集したら、その場で questionBank にも反映しておく
+// （前後の問題に移動してから戻っても編集内容が保持されるようにするため）
+document.getElementById('q-edit-question').addEventListener('input', () => {
+  if (currentQuestionIndex >= 0 && questionBank[currentQuestionIndex]) {
+    questionBank[currentQuestionIndex].question = document.getElementById('q-edit-question').value;
+  }
+  renderQuestionColorPreview();
+});
+
+// カーソル位置に「/」を挿入する（早押しボタンが押された位置を素早く記録するため）
+document.getElementById('btn-insert-slash').onclick = () => {
+  const ta = document.getElementById('q-edit-question');
+  const start = ta.selectionStart ?? ta.value.length;
+  const end = ta.selectionEnd ?? ta.value.length;
+  ta.value = ta.value.slice(0, start) + '/' + ta.value.slice(end);
+  ta.focus();
+  ta.selectionStart = ta.selectionEnd = start + 1;
+  if (currentQuestionIndex >= 0 && questionBank[currentQuestionIndex]) {
+    questionBank[currentQuestionIndex].question = ta.value;
+  }
+  renderQuestionColorPreview();
+};
 
 document.getElementById('btn-q-prev').onclick = () => {
   if (currentQuestionIndex > 0) { currentQuestionIndex--; renderQuestionPreview(); }
@@ -336,6 +381,32 @@ function renderQuestionPanelStatus(questionPanel) {
     ? `投影画面に表示中（${questionPanel.autoHideSeconds}秒後に自動で消えます）`
     : '投影画面に表示中（手動で消すまで表示され続けます）';
 }
+
+// --- SEND履歴 ---
+function fetchAndRenderQuestionHistory() {
+  socket.emit('get_question_history', (res) => {
+    renderQuestionHistoryList((res && res.history) || []);
+  });
+}
+function renderQuestionHistoryList(history) {
+  const list = document.getElementById('question-history-list');
+  if (!history.length) {
+    list.innerHTML = '<div class="hint">まだSENDした問題はありません</div>';
+    return;
+  }
+  list.innerHTML = [...history].reverse().map((h) => `
+    <div class="card" style="margin-bottom:.6em; padding:.7em;">
+      <div class="hint">No. ${escapeHtml(h.no || '')} ・ ${new Date(h.sentAt).toLocaleTimeString()}</div>
+      <div style="margin:.3em 0;">${renderSplitQuestionHTML(h.question || '', escapeHtml)}</div>
+      <div style="color:var(--gold); font-weight:700;">解答: ${escapeHtml(h.answer || '')}</div>
+      ${h.comment ? `<div class="hint">${escapeHtml(h.comment)}</div>` : ''}
+    </div>
+  `).join('');
+}
+socket.on('question_history_updated', fetchAndRenderQuestionHistory);
+document.querySelector('#question-history-list').closest('details').addEventListener('toggle', function () {
+  if (this.open) fetchAndRenderQuestionHistory();
+});
 
 function renderTimer(timer) {
   const el = document.getElementById('timer-display');

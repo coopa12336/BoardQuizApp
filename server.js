@@ -43,6 +43,11 @@ app.use(express.static(path.join(__dirname, 'public')));
 //   questionPanel: { visible: boolean, current: {no,question,answer,comment,author}|null,
 //                     autoHideSeconds: number|null, hideAt: number|null }
 //   _questionHideHandle: NodeJS.Timeout|null (公開状態には含めない)
+//   buzzerSignalMap: [{ signal: string, buzzerId: number }] (早押し機が実際に送ってくる
+//     生の文字列と、席番号(buzzerId)の対応表。機種に依存しない「学習」方式で登録する)
+//   pendingLearnTarget: number|null (学習待ちのbuzzerId。nullなら学習モードではない)
+//   questionHistory: [{ no, question, answer, comment, author, sentAt }] (SEND済みの履歴。
+//     public stateには含めず、get_question_history で個別に取得させる)
 // }
 const rooms = new Map();
 
@@ -92,6 +97,8 @@ function getRoomPublicState(roomName) {
           hideAt: room.questionPanel.hideAt
         }
       : { visible: false, current: null, autoHideSeconds: room.questionPanel ? room.questionPanel.autoHideSeconds : null, hideAt: null },
+    buzzerSignalMap: room.buzzerSignalMap || [],
+    pendingLearnTarget: (room.pendingLearnTarget === undefined ? null : room.pendingLearnTarget),
     players: Array.from(room.players.entries()).map(([id, p]) => ({
       id,
       name: p.name,
@@ -141,8 +148,9 @@ function clearQuestionHideTimer(room) {
 }
 
 // ------------------------------------------------------------------
-// 早押し判定（Arduinoからの入力は投影PCのブラウザがWeb Serial APIで受け取り、
-// Socket.ioの 'client_buzz' イベントとしてここに転送してくる。
+// 早押し判定（早押し機からの入力は投影PCのブラウザがWeb Serial APIで受け取り、
+// Socket.ioの 'client_raw_signal' イベントとしてここに転送してくる。
+// 生の信号→席番号(buzzerId)への対応は buzzerSignalMap で機種非依存に扱う。
 // テスト用の /api/serial-simulate も同じロジックを共有する。）
 // ------------------------------------------------------------------
 function recordBuzz(buzzerId, roomName) {
@@ -299,7 +307,10 @@ io.on('connection', (socket) => {
       _timerHandle: null,
       questionBank: [],
       questionPanel: defaultQuestionPanel(),
-      _questionHideHandle: null
+      questionHistory: [],
+      _questionHideHandle: null,
+      buzzerSignalMap: [],
+      pendingLearnTarget: null
     });
     cb({ ok: true });
   });
@@ -655,6 +666,15 @@ io.on('connection', (socket) => {
       }, validSec * 1000);
     }
 
+    // SENDした内容は履歴として蓄積しておく（主に回答者が後から見返せるようにするため）。
+    // 上限を設け、古いものから削除する（無制限に増え続けないようにする）。
+    room.questionHistory = room.questionHistory || [];
+    room.questionHistory.push({ ...room.questionPanel.current, sentAt: Date.now() });
+    if (room.questionHistory.length > 200) room.questionHistory.shift();
+    // 履歴は room_state には含めない（毎回のブロードキャストが重くなるため）。
+    // 履歴を見たいクライアントは get_question_history で個別に取得する。
+    io.to(joinedRoom).emit('question_history_updated');
+
     broadcastRoomState(joinedRoom);
   });
 
@@ -668,12 +688,76 @@ io.on('connection', (socket) => {
     broadcastRoomState(joinedRoom);
   });
 
-  // 投影PCのブラウザがWeb Serial APIで受信したArduinoの早押し信号を転送してくる
-  socket.on('client_buzz', ({ buzzerId }) => {
+  // これまでにSENDされた問題の履歴を取得する（回答者・判定者どちらからでも呼べる）
+  socket.on('get_question_history', (cb) => {
+    if (typeof cb !== 'function') return;
+    if (!joinedRoom) { cb({ history: [] }); return; }
+    const room = rooms.get(joinedRoom);
+    cb({ history: (room && room.questionHistory) || [] });
+  });
+
+  // 投影PCのブラウザがWeb Serial APIで受信した早押し機からの「生の文字列」を転送してくる。
+  // 機種によって送ってくる形式がバラバラなので、文字列そのものは解釈せず、
+  // 「学習モード」で事前に対応表(buzzerSignalMap)へ登録した内容とだけ突き合わせる。
+  socket.on('client_raw_signal', ({ signal }) => {
     if (!joinedRoom) return;
     if (role !== 'spectator' && role !== 'judge') return; // 回答者からの送信は無視（不正防止）
-    if (buzzerId === undefined || buzzerId === null) return;
-    recordBuzz(Number(buzzerId), joinedRoom);
+    const room = rooms.get(joinedRoom);
+    if (!room || typeof signal !== 'string' || !signal.trim()) return;
+    const trimmed = signal.trim().slice(0, 200);
+
+    if (room.pendingLearnTarget !== null && room.pendingLearnTarget !== undefined) {
+      // 学習モード中: 今受信した信号を、指定されていた席番号(buzzerId)に登録する
+      const buzzerId = room.pendingLearnTarget;
+      room.buzzerSignalMap = (room.buzzerSignalMap || []).filter(
+        (m) => m.signal !== trimmed && m.buzzerId !== buzzerId
+      );
+      room.buzzerSignalMap.push({ signal: trimmed, buzzerId });
+      room.pendingLearnTarget = null;
+      broadcastRoomState(joinedRoom);
+      io.to(joinedRoom).emit('signal_learned', { signal: trimmed, buzzerId });
+      return;
+    }
+
+    const mapping = (room.buzzerSignalMap || []).find((m) => m.signal === trimmed);
+    if (mapping) {
+      recordBuzz(mapping.buzzerId, joinedRoom);
+    } else {
+      // 対応表に無い信号。設定画面で気づけるよう、受信内容だけ知らせる（記録はしない）
+      io.to(joinedRoom).emit('unmapped_signal', { signal: trimmed });
+    }
+  });
+
+  // 早押し機の「学習モード」を開始する。次に届いた生の信号を指定の席番号(buzzerId)に割り当てる。
+  socket.on('start_learn_signal', ({ buzzerId }) => {
+    if (!joinedRoom) return;
+    if (role !== 'spectator' && role !== 'judge') return;
+    const room = rooms.get(joinedRoom);
+    if (!room) return;
+    const n = Number(buzzerId);
+    if (!Number.isFinite(n)) return;
+    room.pendingLearnTarget = n;
+    broadcastRoomState(joinedRoom);
+  });
+
+  // 学習モードを中断する
+  socket.on('cancel_learn_signal', () => {
+    if (!joinedRoom) return;
+    if (role !== 'spectator' && role !== 'judge') return;
+    const room = rooms.get(joinedRoom);
+    if (!room) return;
+    room.pendingLearnTarget = null;
+    broadcastRoomState(joinedRoom);
+  });
+
+  // 登録済みの対応表から1件削除する
+  socket.on('remove_signal_mapping', ({ signal }) => {
+    if (!joinedRoom) return;
+    if (role !== 'spectator' && role !== 'judge') return;
+    const room = rooms.get(joinedRoom);
+    if (!room) return;
+    room.buzzerSignalMap = (room.buzzerSignalMap || []).filter((m) => m.signal !== signal);
+    broadcastRoomState(joinedRoom);
   });
 
   socket.on('disconnect', () => {
