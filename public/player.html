@@ -10,11 +10,40 @@
 <div class="topbar">
   <div class="brand" id="player-name-tag">回答者</div>
   <div style="display:flex; align-items:center; gap:.8em;">
+    <button class="secondary" id="btn-open-buzzer" style="padding:.4em .8em; font-size:.85rem;">⚡ 早押しボタン</button>
     <button class="secondary" id="btn-open-history" style="padding:.4em .8em; font-size:.85rem;">📜 問題履歴</button>
     <button class="secondary" id="btn-open-scoreboard" style="padding:.4em .8em; font-size:.85rem;">
       🏆 スコア <span id="my-score" style="font-weight:900; color:var(--gold);">0点</span>
     </button>
     <div class="room-tag" id="room-tag">-</div>
+  </div>
+</div>
+
+<div id="buzzer-overlay" class="modal-overlay" style="display:none;">
+  <div class="modal-card" style="text-align:center;">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:.8em;">
+      <h3 style="margin:0;">早押しボタン</h3>
+      <button class="secondary" id="btn-close-buzzer" style="padding:.3em .8em;">閉じる</button>
+    </div>
+    <p class="hint">実物の早押し機が無くても、この画面から早押しに参加できます。
+      ボタンをタップするか、下で設定したキーボードのキーを押してください。</p>
+
+    <button id="btn-virtual-buzz" class="danger" style="
+      width:100%; max-width:220px; aspect-ratio:1; border-radius:50%; margin:1em auto;
+      display:flex; align-items:center; justify-content:center; font-size:1.3rem;
+      font-weight:900; box-shadow:0 6px 0 #8a2a2e, 0 8px 16px rgba(0,0,0,.4);
+    ">押す！</button>
+
+    <div id="buzzer-result-status" class="hint" style="min-height:1.4em; margin:.4em 0 1em;"></div>
+
+    <div style="border-top:1px solid var(--line); padding-top:.8em;">
+      <div class="hint">キーボードでも押せます（タブレットに外付けキーボードを
+        繋いでいる場合や、パソコンで参加している場合に便利です）</div>
+      <div style="display:flex; align-items:center; justify-content:center; gap:.6em; margin-top:.6em;">
+        <span>現在のキー: <strong id="buzzer-key-label" style="color:var(--gold);">Enter</strong></span>
+        <button class="secondary" id="btn-change-buzzer-key" style="padding:.3em .8em; font-size:.85rem;">変更する</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -212,6 +241,7 @@ socket.on('room_state', applyState);
 
 function applyState(state) {
   if (!state) return;
+  latestState = state;
   const label = document.getElementById('phase-label');
   const me = (state.players || []).find(p => p.id === socket.id);
 
@@ -229,6 +259,9 @@ function applyState(state) {
 
   renderScoreboard(state);
   renderTimer(state.timer);
+  if (document.getElementById('buzzer-overlay').style.display === 'flex') {
+    renderBuzzerResultStatus(state);
+  }
 
   // ラベルの文言変化（ロック表示・タイマー表示の有無など）でヘッダー行の高さが
   // 変わることがあるため、その都度キャンバスのサイズを再計算して画面内に収める
@@ -277,6 +310,66 @@ document.getElementById('btn-close-scoreboard').onclick = () => {
   document.getElementById('scoreboard-overlay').style.display = 'none';
 };
 
+// --- 仮想早押しボタン（実機の早押し機が無い回答者向け） ---
+// 自分自身のsocket接続からそのまま送るので、席番号やボタンの割り当て設定は不要。
+// キーボードでの早押しにも対応し、使うキーは端末ごとに自由に設定できる（既定はEnter）。
+let buzzerKey = localStorage.getItem(`buzzerKey:${roomName}`) || 'Enter';
+let waitingForKeyBind = false;
+document.getElementById('buzzer-key-label').textContent = buzzerKey;
+
+function triggerVirtualBuzz() {
+  socket.emit('player_buzz');
+  const btn = document.getElementById('btn-virtual-buzz');
+  btn.style.transform = 'scale(.92)';
+  setTimeout(() => { btn.style.transform = 'scale(1)'; }, 120);
+}
+
+document.getElementById('btn-virtual-buzz').onclick = triggerVirtualBuzz;
+
+document.getElementById('btn-open-buzzer').onclick = () => {
+  document.getElementById('buzzer-overlay').style.display = 'flex';
+  renderBuzzerResultStatus(latestState);
+};
+document.getElementById('btn-close-buzzer').onclick = () => {
+  document.getElementById('buzzer-overlay').style.display = 'none';
+};
+
+document.getElementById('btn-change-buzzer-key').onclick = () => {
+  waitingForKeyBind = true;
+  document.getElementById('buzzer-key-label').textContent = '（キーを押してください…）';
+};
+
+// キー入力の監視はページ全体で常に有効にしておく（モーダルを閉じていても、
+// 早押しの瞬間にすぐ反応できるようにするため）。
+window.addEventListener('keydown', (evt) => {
+  if (waitingForKeyBind) {
+    waitingForKeyBind = false;
+    buzzerKey = evt.key;
+    localStorage.setItem(`buzzerKey:${roomName}`, buzzerKey);
+    document.getElementById('buzzer-key-label').textContent = buzzerKey;
+    evt.preventDefault();
+    return;
+  }
+  if (evt.repeat) return; // 長押しの連続発火を無視
+  if (evt.key === buzzerKey) {
+    evt.preventDefault();
+    triggerVirtualBuzz();
+  }
+});
+
+// 早押し結果（自分が何着だったか）をボタンの下に表示する
+let latestState = null;
+function renderBuzzerResultStatus(state) {
+  const el = document.getElementById('buzzer-result-status');
+  if (!state) { el.textContent = ''; return; }
+  const idx = (state.buzzOrder || []).findIndex((b) => b.playerId === socket.id);
+  if (idx === -1) {
+    el.textContent = state.buzzAccepting ? '早押し受付中です' : 'まだ早押しは始まっていません';
+  } else {
+    el.textContent = `⚡ あなたは ${idx + 1}着 でした！`;
+  }
+}
+
 // --- 問題履歴パネル（判定者がSENDした問題を後から見返せる） ---
 document.getElementById('btn-open-history').onclick = () => {
   document.getElementById('history-overlay').style.display = 'flex';
@@ -296,6 +389,21 @@ socket.on('question_history_updated', () => {
   }
 });
 
+// 問題履歴の1件に記録された正誤結果(results)を「正解者/不正解者」のリストとして表示する
+function renderHistoryResultsHTML(results, escapeHtmlFn) {
+  if (!results || !results.length) return '';
+  const correctNames = results.filter((r) => r.correct).map((r) => escapeHtmlFn(r.name));
+  const incorrectNames = results.filter((r) => !r.correct).map((r) => escapeHtmlFn(r.name));
+  const parts = [];
+  if (correctNames.length) {
+    parts.push(`<div style="color:var(--green);">○ 正解: ${correctNames.join('、')}</div>`);
+  }
+  if (incorrectNames.length) {
+    parts.push(`<div style="color:var(--red);">× 不正解: ${incorrectNames.join('、')}</div>`);
+  }
+  return `<div style="margin-top:.5em; font-size:.85rem;">${parts.join('')}</div>`;
+}
+
 function renderHistoryList(history) {
   const list = document.getElementById('history-list');
   if (!history.length) {
@@ -309,6 +417,7 @@ function renderHistoryList(history) {
       <div style="color:var(--gold); font-weight:700;">解答: ${escapeHtml(h.answer || '')}</div>
       ${h.comment ? `<div class="hint">${escapeHtml(h.comment)}</div>` : ''}
       ${h.author ? `<div class="hint">出題: ${escapeHtml(h.author)}</div>` : ''}
+      ${renderHistoryResultsHTML(h.results, escapeHtml)}
     </div>
   `).join('');
 }

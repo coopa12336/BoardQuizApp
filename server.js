@@ -46,8 +46,12 @@ app.use(express.static(path.join(__dirname, 'public')));
 //   buzzerSignalMap: [{ signal: string, buzzerId: number }] (早押し機が実際に送ってくる
 //     生の文字列と、席番号(buzzerId)の対応表。機種に依存しない「学習」方式で登録する)
 //   pendingLearnTarget: number|null (学習待ちのbuzzerId。nullなら学習モードではない)
-//   questionHistory: [{ no, question, answer, comment, author, sentAt }] (SEND済みの履歴。
+//   questionHistory: [{ no, question, answer, comment, author, sentAt,
+//     results: [{ playerId, name, correct, points }] }] (SEND済みの履歴。
+//     同じNo.は上書き更新され、重複しない。resultsはその問題の正誤判定確定時に記録される。
 //     public stateには含めず、get_question_history で個別に取得させる)
+//   lastSentQuestionNo: string|null (直近にSENDした問題番号。正誤判定確定時に
+//     どの履歴エントリへ結果を記録するかの紐付けに使う)
 // }
 const rooms = new Map();
 
@@ -70,6 +74,57 @@ function defaultBuzzEffect() {
 
 function defaultQuestionPanel() {
   return { visible: false, current: null, autoHideSeconds: null, hideAt: null };
+}
+
+// 少数正解/少数不正解ボーナスの初期値（既定は無効）。
+// thresholdPercent: 正解者(または不正解者)の割合がこの%以下なら「少数派」とみなす。
+// points: 該当者に追加で加減算する点数（マイナスも可）。
+function defaultMinorityRules() {
+  return {
+    correct: { enabled: false, thresholdPercent: 50, points: 10 },
+    incorrect: { enabled: false, thresholdPercent: 50, points: 10 }
+  };
+}
+
+// 「次の問題へ」「ロック」「早押しリセット」「正誤判定の確定」など、
+// やり直しが効くべき操作の前に呼び出し、元に戻せるよう状態を保存しておく。
+// スタックが増えすぎないよう上限を設ける。
+const UNDO_STACK_LIMIT = 20;
+
+function snapshotRoomRound(room) {
+  return {
+    phase: room.phase,
+    buzzOrder: JSON.parse(JSON.stringify(room.buzzOrder)),
+    buzzAccepting: room.buzzAccepting,
+    players: Array.from(room.players.entries()).map(([id, p]) => [id, {
+      hasSubmitted: p.hasSubmitted,
+      imageData: p.imageData,
+      correct: p.correct,
+      score: p.score,
+      lastDelta: p.lastDelta,
+      appliedRuleId: p.appliedRuleId,
+      pendingRuleId: p.pendingRuleId,
+      locked: p.locked,
+      revealed: p.revealed
+    }])
+  };
+}
+
+function restoreRoomRound(room, snapshot) {
+  room.phase = snapshot.phase;
+  room.buzzOrder = snapshot.buzzOrder;
+  room.buzzAccepting = snapshot.buzzAccepting;
+  snapshot.players.forEach(([id, fields]) => {
+    const p = room.players.get(id);
+    if (p) Object.assign(p, fields); // 途中で退室した回答者の分は復元できないためスキップ
+  });
+}
+
+function pushUndoSnapshot(room) {
+  room.undoStack = room.undoStack || [];
+  room.undoStack.push(snapshotRoomRound(room));
+  if (room.undoStack.length > UNDO_STACK_LIMIT) room.undoStack.shift();
+  room.redoStack = []; // 新しい操作をしたら、それ以前のredo履歴は無効にする
 }
 
 const VALID_BUZZ_EFFECTS = new Set(['flash', 'light', 'none']);
@@ -99,6 +154,9 @@ function getRoomPublicState(roomName) {
       : { visible: false, current: null, autoHideSeconds: room.questionPanel ? room.questionPanel.autoHideSeconds : null, hideAt: null },
     buzzerSignalMap: room.buzzerSignalMap || [],
     pendingLearnTarget: (room.pendingLearnTarget === undefined ? null : room.pendingLearnTarget),
+    minorityRules: room.minorityRules || defaultMinorityRules(),
+    canUndo: !!(room.undoStack && room.undoStack.length),
+    canRedo: !!(room.redoStack && room.redoStack.length),
     players: Array.from(room.players.entries()).map(([id, p]) => ({
       id,
       name: p.name,
@@ -184,6 +242,25 @@ app.post('/api/serial-simulate', (req, res) => {
   recordBuzz(Number(buzzerId), roomName);
   res.json({ ok: true });
 });
+
+// 「ボタンの割り当て」機能で、席番号ではなく回答者を直接指定して早押しを記録する版。
+// 対象の回答者が既に退室していた場合は何もしない。
+function recordBuzzForPlayer(playerId, roomName) {
+  const room = rooms.get(roomName);
+  if (!room || !room.buzzAccepting) return;
+  if (room.buzzOrder.some((b) => b.playerId === playerId)) return;
+  const player = room.players.get(playerId);
+  if (!player) return;
+
+  room.buzzOrder.push({
+    buzzerId: null,
+    playerId,
+    name: player.name,
+    ts: Date.now()
+  });
+
+  broadcastRoomState(roomName);
+}
 
 // ------------------------------------------------------------------
 // 問題ファイル(Excel/CSV/スプレッドシート書き出し等)の読み込み
@@ -308,9 +385,13 @@ io.on('connection', (socket) => {
       questionBank: [],
       questionPanel: defaultQuestionPanel(),
       questionHistory: [],
+      lastSentQuestionNo: null,
       _questionHideHandle: null,
       buzzerSignalMap: [],
-      pendingLearnTarget: null
+      pendingLearnTarget: null,
+      minorityRules: defaultMinorityRules(),
+      undoStack: [],
+      redoStack: []
     });
     cb({ ok: true });
   });
@@ -321,6 +402,14 @@ io.on('connection', (socket) => {
     if (room.password && room.password !== password) return cb({ error: 'パスワードが違います' });
 
     if (reqRole === 'judge') {
+      // 判定者は1部屋につき1人だけ。既に接続中の判定者がいる場合は拒否する
+      // （判定者が切断済みなのにjudgeSocketIdが残っている場合は上書きを許可する）
+      const existingJudgeStillConnected = room.judgeSocketId &&
+        room.judgeSocketId !== socket.id &&
+        io.sockets.sockets.has(room.judgeSocketId);
+      if (existingJudgeStillConnected) {
+        return cb({ error: 'すでに判定者が入室しています（判定者は1人だけ入室できます）' });
+      }
       room.judgeSocketId = socket.id;
       role = 'judge';
     } else {
@@ -393,11 +482,29 @@ io.on('connection', (socket) => {
     broadcastRoomState(joinedRoom);
   });
 
+  // 回答者自身の画面にある「仮想早押しボタン」（実機の早押し機が無い参加者向け）。
+  // 自分のsocket自体が本人であることの証明になるため、番号やボタン割り当ての
+  // 設定は一切不要で、そのまま recordBuzzForPlayer に直結できる。
+  socket.on('player_buzz', () => {
+    if (!joinedRoom || role !== 'player') return;
+    recordBuzzForPlayer(socket.id, joinedRoom);
+  });
+
+  // 投影PCのブラウザが、既知のフォーマット(ButtonRank.../BUZZ,...)を認識できた時の
+  // 高速パス。学習(client_raw_signal)を介さずそのまま席番号(buzzerId)で判定する。
+  socket.on('client_buzz', ({ buzzerId }) => {
+    if (!joinedRoom) return;
+    if (role !== 'spectator' && role !== 'judge') return; // 回答者からの送信は無視（不正防止）
+    if (buzzerId === undefined || buzzerId === null) return;
+    recordBuzz(Number(buzzerId), joinedRoom);
+  });
+
   // 判定者操作
   socket.on('judge_new_question', () => {
     if (role !== 'judge' || !joinedRoom) return;
     const room = rooms.get(joinedRoom);
     if (!room) return;
+    pushUndoSnapshot(room);
     clearRoomTimer(room);
     room.phase = 'writing';
     room.buzzOrder = [];
@@ -420,6 +527,7 @@ io.on('connection', (socket) => {
     if (role !== 'judge' || !joinedRoom) return;
     const room = rooms.get(joinedRoom);
     if (!room) return;
+    pushUndoSnapshot(room);
     clearRoomTimer(room);
     lockAllPlayers(room);
     broadcastRoomState(joinedRoom);
@@ -514,14 +622,21 @@ io.on('connection', (socket) => {
       if (!player.pendingRuleId) continue;
       const rule = (room.scoreRules || []).find((r) => r.id === player.pendingRuleId);
       if (!rule) { player.pendingRuleId = null; continue; }
+      results.push({ playerId, player, rule });
+    }
+    if (results.length === 0) return; // 誰も仮選択していなければ何もしない
 
+    pushUndoSnapshot(room);
+
+    const finalResults = [];
+    for (const { playerId, player, rule } of results) {
       player.score = (player.score || 0) - (player.lastDelta || 0) + rule.points;
       player.lastDelta = rule.points;
       player.correct = rule.correct;
       player.appliedRuleId = rule.id;
       player.pendingRuleId = null;
 
-      results.push({
+      finalResults.push({
         playerId,
         name: player.name,
         correct: rule.correct,
@@ -530,9 +645,58 @@ io.on('connection', (socket) => {
       });
     }
 
-    if (results.length === 0) return; // 誰も仮選択していなければ何もしない
+    // 少数正解/少数不正解ボーナス: 今回まとめて確定した中で、正解(または不正解)の
+    // 割合が設定したしきい値(%)以下だった場合、該当者全員に追加で加減点する。
+    const minority = room.minorityRules || defaultMinorityRules();
+    const total = finalResults.length;
+    if (total > 0) {
+      const correctCount = finalResults.filter((r) => r.correct).length;
+      const incorrectCount = total - correctCount;
+
+      if (minority.correct && minority.correct.enabled && correctCount > 0) {
+        const pct = (correctCount / total) * 100;
+        if (pct <= Number(minority.correct.thresholdPercent)) {
+          const bonus = Number(minority.correct.points) || 0;
+          finalResults.forEach((r) => {
+            if (r.correct && bonus !== 0) {
+              const p = room.players.get(r.playerId);
+              if (p) { p.score = (p.score || 0) + bonus; r.newScore = p.score; r.points += bonus; r.minorityBonus = bonus; }
+            }
+          });
+        }
+      }
+      if (minority.incorrect && minority.incorrect.enabled && incorrectCount > 0) {
+        const pct = (incorrectCount / total) * 100;
+        if (pct <= Number(minority.incorrect.thresholdPercent)) {
+          const bonus = Number(minority.incorrect.points) || 0;
+          finalResults.forEach((r) => {
+            if (!r.correct && bonus !== 0) {
+              const p = room.players.get(r.playerId);
+              if (p) { p.score = (p.score || 0) + bonus; r.newScore = p.score; r.points += bonus; r.minorityBonus = bonus; }
+            }
+          });
+        }
+      }
+    }
+
     broadcastRoomState(joinedRoom);
-    io.to(joinedRoom).emit('score_confirmed', { results });
+    io.to(joinedRoom).emit('score_confirmed', { results: finalResults });
+
+    // 直近にSENDした問題があれば、その問題の履歴エントリに正誤結果を記録しておく
+    // （回答者が後から「この問題は誰が正解/不正解だったか」を見返せるようにするため）。
+    // 同じ人が同じ問題で複数回判定された場合は、最新の結果で上書きする。
+    if (room.lastSentQuestionNo) {
+      const entry = (room.questionHistory || []).find((h) => h.no === room.lastSentQuestionNo);
+      if (entry) {
+        entry.results = entry.results || [];
+        finalResults.forEach((r) => {
+          const line = { playerId: r.playerId, name: r.name, correct: r.correct, points: r.points };
+          const idx = entry.results.findIndex((x) => x.playerId === r.playerId);
+          if (idx >= 0) entry.results[idx] = line; else entry.results.push(line);
+        });
+        io.to(joinedRoom).emit('question_history_updated');
+      }
+    }
   });
 
   // 得点ルールの編集（判定者画面から数値・ラベルをまとめて上書き保存）
@@ -615,6 +779,50 @@ io.on('connection', (socket) => {
     broadcastRoomState(joinedRoom);
   });
 
+  // 少数正解/少数不正解ボーナスの設定を更新する
+  socket.on('judge_update_minority_rules', ({ minorityRules }) => {
+    if (role !== 'judge' || !joinedRoom) return;
+    const room = rooms.get(joinedRoom);
+    if (!room || !minorityRules) return;
+    const clean = (side) => ({
+      enabled: !!(minorityRules[side] && minorityRules[side].enabled),
+      thresholdPercent: Math.min(100, Math.max(0, Number(minorityRules[side] && minorityRules[side].thresholdPercent) || 0)),
+      points: Number(minorityRules[side] && minorityRules[side].points) || 0
+    });
+    room.minorityRules = { correct: clean('correct'), incorrect: clean('incorrect') };
+    broadcastRoomState(joinedRoom);
+  });
+
+  // 直前の操作を元に戻す（次の問題へ/ロック/早押しリセット/正誤判定の確定 が対象）
+  socket.on('judge_undo', () => {
+    if (role !== 'judge' || !joinedRoom) return;
+    const room = rooms.get(joinedRoom);
+    if (!room || !room.undoStack || !room.undoStack.length) return;
+    const current = snapshotRoomRound(room);
+    const prev = room.undoStack.pop();
+    room.redoStack = room.redoStack || [];
+    room.redoStack.push(current);
+    if (room.redoStack.length > UNDO_STACK_LIMIT) room.redoStack.shift();
+    clearRoomTimer(room); // 復元後の状態と噛み合わなくなるタイマーは止めておく
+    restoreRoomRound(room, prev);
+    broadcastRoomState(joinedRoom);
+  });
+
+  // 元に戻した操作をやり直す
+  socket.on('judge_redo', () => {
+    if (role !== 'judge' || !joinedRoom) return;
+    const room = rooms.get(joinedRoom);
+    if (!room || !room.redoStack || !room.redoStack.length) return;
+    const current = snapshotRoomRound(room);
+    const next = room.redoStack.pop();
+    room.undoStack = room.undoStack || [];
+    room.undoStack.push(current);
+    if (room.undoStack.length > UNDO_STACK_LIMIT) room.undoStack.shift();
+    clearRoomTimer(room);
+    restoreRoomRound(room, next);
+    broadcastRoomState(joinedRoom);
+  });
+
   socket.on('judge_set_display', ({ mode, selectedPlayerId }) => {
     if (role !== 'judge' || !joinedRoom) return;
     const room = rooms.get(joinedRoom);
@@ -627,6 +835,7 @@ io.on('connection', (socket) => {
     if (role !== 'judge' || !joinedRoom) return;
     const room = rooms.get(joinedRoom);
     if (!room) return;
+    pushUndoSnapshot(room);
     room.buzzOrder = [];
     room.buzzAccepting = true;
     broadcastRoomState(joinedRoom);
@@ -667,10 +876,28 @@ io.on('connection', (socket) => {
     }
 
     // SENDした内容は履歴として蓄積しておく（主に回答者が後から見返せるようにするため）。
-    // 上限を設け、古いものから削除する（無制限に増え続けないようにする）。
+    // 同じ問題番号(No.)が既に履歴にあれば、新しいエントリを増やさずその場で更新する
+    // （SENDを複数回押しても重複が増えないようにするため）。正誤の記録(results)は
+    // 更新時も引き継ぐ。
     room.questionHistory = room.questionHistory || [];
-    room.questionHistory.push({ ...room.questionPanel.current, sentAt: Date.now() });
-    if (room.questionHistory.length > 200) room.questionHistory.shift();
+    const sentNo = room.questionPanel.current.no;
+    const existingIdx = sentNo
+      ? room.questionHistory.findIndex((h) => h.no && h.no === sentNo)
+      : -1;
+    if (existingIdx >= 0) {
+      room.questionHistory[existingIdx] = {
+        ...room.questionPanel.current,
+        sentAt: Date.now(),
+        results: room.questionHistory[existingIdx].results || []
+      };
+    } else {
+      room.questionHistory.push({ ...room.questionPanel.current, sentAt: Date.now(), results: [] });
+      if (room.questionHistory.length > 200) room.questionHistory.shift();
+    }
+    // 直近にSENDした問題番号を覚えておく（正誤判定確定時に、どの問題への結果か
+    // 紐づけるために使う。パネルが自動的に隠れても、この値はそのまま残しておく）。
+    room.lastSentQuestionNo = sentNo || null;
+
     // 履歴は room_state には含めない（毎回のブロードキャストが重くなるため）。
     // 履歴を見たいクライアントは get_question_history で個別に取得する。
     io.to(joinedRoom).emit('question_history_updated');
@@ -699,6 +926,7 @@ io.on('connection', (socket) => {
   // 投影PCのブラウザがWeb Serial APIで受信した早押し機からの「生の文字列」を転送してくる。
   // 機種によって送ってくる形式がバラバラなので、文字列そのものは解釈せず、
   // 「学習モード」で事前に対応表(buzzerSignalMap)へ登録した内容とだけ突き合わせる。
+  // 対応表は 生の信号 → 回答者(playerId) の直接対応（席番号を経由しない）。
   socket.on('client_raw_signal', ({ signal }) => {
     if (!joinedRoom) return;
     if (role !== 'spectator' && role !== 'judge') return; // 回答者からの送信は無視（不正防止）
@@ -706,37 +934,36 @@ io.on('connection', (socket) => {
     if (!room || typeof signal !== 'string' || !signal.trim()) return;
     const trimmed = signal.trim().slice(0, 200);
 
-    if (room.pendingLearnTarget !== null && room.pendingLearnTarget !== undefined) {
-      // 学習モード中: 今受信した信号を、指定されていた席番号(buzzerId)に登録する
-      const buzzerId = room.pendingLearnTarget;
+    if (room.pendingLearnTarget) {
+      // 学習モード中: 今受信した信号を、指定されていた回答者(playerId)に登録する
+      const targetPlayerId = room.pendingLearnTarget;
       room.buzzerSignalMap = (room.buzzerSignalMap || []).filter(
-        (m) => m.signal !== trimmed && m.buzzerId !== buzzerId
+        (m) => m.signal !== trimmed && m.playerId !== targetPlayerId
       );
-      room.buzzerSignalMap.push({ signal: trimmed, buzzerId });
+      room.buzzerSignalMap.push({ signal: trimmed, playerId: targetPlayerId });
       room.pendingLearnTarget = null;
       broadcastRoomState(joinedRoom);
-      io.to(joinedRoom).emit('signal_learned', { signal: trimmed, buzzerId });
+      const player = room.players.get(targetPlayerId);
+      io.to(joinedRoom).emit('signal_learned', { signal: trimmed, playerId: targetPlayerId, playerName: player ? player.name : '(不明)' });
       return;
     }
 
     const mapping = (room.buzzerSignalMap || []).find((m) => m.signal === trimmed);
     if (mapping) {
-      recordBuzz(mapping.buzzerId, joinedRoom);
+      recordBuzzForPlayer(mapping.playerId, joinedRoom);
     } else {
       // 対応表に無い信号。設定画面で気づけるよう、受信内容だけ知らせる（記録はしない）
       io.to(joinedRoom).emit('unmapped_signal', { signal: trimmed });
     }
   });
 
-  // 早押し機の「学習モード」を開始する。次に届いた生の信号を指定の席番号(buzzerId)に割り当てる。
-  socket.on('start_learn_signal', ({ buzzerId }) => {
+  // 早押し機の「学習モード」を開始する。次に届いた生の信号を指定の回答者(playerId)に割り当てる。
+  socket.on('start_learn_signal', ({ playerId }) => {
     if (!joinedRoom) return;
     if (role !== 'spectator' && role !== 'judge') return;
     const room = rooms.get(joinedRoom);
-    if (!room) return;
-    const n = Number(buzzerId);
-    if (!Number.isFinite(n)) return;
-    room.pendingLearnTarget = n;
+    if (!room || !playerId || !room.players.has(playerId)) return;
+    room.pendingLearnTarget = playerId;
     broadcastRoomState(joinedRoom);
   });
 

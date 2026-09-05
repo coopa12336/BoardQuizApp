@@ -26,7 +26,13 @@
         <button class="gold" id="btn-reveal-all">全員の解答を公開する</button>
         <button class="secondary" id="btn-hide-all">全員を非公開にする</button>
       </div>
-      <div class="hint" id="phase-status" style="margin-top:.7em;"></div>
+      <div style="display:flex; gap:.6em; flex-wrap:wrap; margin-top:.6em;">
+        <button class="secondary" id="btn-undo" disabled>↩️ 元に戻す</button>
+        <button class="secondary" id="btn-redo" disabled>↪️ やり直す</button>
+      </div>
+      <div class="hint" style="margin-top:.4em;">「元に戻す」は、直前の「次の問題へ」「ロック」「早押しリセット」
+        「正誤判定の確定」を取り消せます（間違えて次の問題へ進んでしまった時などにお使いください）。</div>
+      <div class="hint" id="phase-status" style="margin-top:.5em;"></div>
       <div class="hint" style="margin-top:.3em;">解答の公開/非公開は、投影画面に他の人の解答が見えないようにするための機能です。
         個別に切り替えたい場合は、下の回答者タイルの「👁」ボタンを使ってください。</div>
     </div>
@@ -191,6 +197,50 @@
           </div>
         </div>
 
+        <div class="card">
+          <h3 style="margin-bottom:.4em;">少数派ボーナス</h3>
+          <p class="hint">「正誤判定を確定する」を押した時、その回で仮選択されていた人数のうち、正解者
+            （または不正解者）の割合がしきい値以下だった場合、該当者全員に追加で得点を加減します。
+            採用するかどうかはチェックで切り替えられます。</p>
+
+          <div style="margin-top:1em; padding:.8em; background:var(--panel-bg-raised); border-radius:10px;">
+            <label style="display:flex; align-items:center; gap:.5em; font-weight:700; margin-bottom:.6em;">
+              <input type="checkbox" id="minority-correct-enabled" style="width:1.2em; height:1.2em;">
+              正解者が少数派だった場合にボーナスを与える
+            </label>
+            <div style="display:flex; gap:1em; flex-wrap:wrap;">
+              <div class="field" style="margin:0;">
+                <label>正解者の割合が何%以下なら「少数派」とみなすか</label>
+                <input type="number" id="minority-correct-threshold" min="0" max="100" style="width:6em;"> %
+              </div>
+              <div class="field" style="margin:0;">
+                <label>該当者への加減点（マイナス可）</label>
+                <input type="number" id="minority-correct-points" style="width:6em;"> 点
+              </div>
+            </div>
+          </div>
+
+          <div style="margin-top:.8em; padding:.8em; background:var(--panel-bg-raised); border-radius:10px;">
+            <label style="display:flex; align-items:center; gap:.5em; font-weight:700; margin-bottom:.6em;">
+              <input type="checkbox" id="minority-incorrect-enabled" style="width:1.2em; height:1.2em;">
+              不正解者が少数派だった場合にボーナスを与える
+            </label>
+            <div style="display:flex; gap:1em; flex-wrap:wrap;">
+              <div class="field" style="margin:0;">
+                <label>不正解者の割合が何%以下なら「少数派」とみなすか</label>
+                <input type="number" id="minority-incorrect-threshold" min="0" max="100" style="width:6em;"> %
+              </div>
+              <div class="field" style="margin:0;">
+                <label>該当者への加減点（マイナス可）</label>
+                <input type="number" id="minority-incorrect-points" style="width:6em;"> 点
+              </div>
+            </div>
+          </div>
+
+          <button class="gold" id="btn-save-minority-rules" style="margin-top:1em;">この内容で保存する</button>
+          <div class="hint" id="minority-rules-status" style="margin-top:.5em;"></div>
+        </div>
+
       </div>
     </details>
 
@@ -260,6 +310,8 @@ document.getElementById('btn-display-grid').onclick = () => socket.emit('judge_s
 document.getElementById('btn-reveal-all').onclick = () => socket.emit('judge_set_reveal_all', { revealed: true });
 document.getElementById('btn-hide-all').onclick = () => socket.emit('judge_set_reveal_all', { revealed: false });
 document.getElementById('btn-confirm-scoring').onclick = () => socket.emit('judge_confirm_scoring');
+document.getElementById('btn-undo').onclick = () => socket.emit('judge_undo');
+document.getElementById('btn-redo').onclick = () => socket.emit('judge_redo');
 
 document.getElementById('btn-timer-start').onclick = () => {
   const seconds = Number(document.getElementById('timer-seconds-input').value);
@@ -388,6 +440,21 @@ function fetchAndRenderQuestionHistory() {
     renderQuestionHistoryList((res && res.history) || []);
   });
 }
+// 問題履歴の1件に記録された正誤結果(results)を「正解者/不正解者」のリストとして表示する
+function renderHistoryResultsHTML(results, escapeHtmlFn) {
+  if (!results || !results.length) return '';
+  const correctNames = results.filter((r) => r.correct).map((r) => escapeHtmlFn(r.name));
+  const incorrectNames = results.filter((r) => !r.correct).map((r) => escapeHtmlFn(r.name));
+  const parts = [];
+  if (correctNames.length) {
+    parts.push(`<div style="color:var(--green);">○ 正解: ${correctNames.join('、')}</div>`);
+  }
+  if (incorrectNames.length) {
+    parts.push(`<div style="color:var(--red);">× 不正解: ${incorrectNames.join('、')}</div>`);
+  }
+  return `<div style="margin-top:.5em; font-size:.85rem;">${parts.join('')}</div>`;
+}
+
 function renderQuestionHistoryList(history) {
   const list = document.getElementById('question-history-list');
   if (!history.length) {
@@ -400,6 +467,7 @@ function renderQuestionHistoryList(history) {
       <div style="margin:.3em 0;">${renderSplitQuestionHTML(h.question || '', escapeHtml)}</div>
       <div style="color:var(--gold); font-weight:700;">解答: ${escapeHtml(h.answer || '')}</div>
       ${h.comment ? `<div class="hint">${escapeHtml(h.comment)}</div>` : ''}
+      ${renderHistoryResultsHTML(h.results, escapeHtml)}
     </div>
   `).join('');
 }
@@ -552,9 +620,47 @@ function render(state) {
 
   renderScoreRules(state.scoreRules || []);
   renderBuzzEffectConfig(state.buzzEffect);
+  renderMinorityRules(state.minorityRules);
   renderTimer(state.timer);
   renderQuestionPanelStatus(state.questionPanel);
+  document.getElementById('btn-undo').disabled = !state.canUndo;
+  document.getElementById('btn-redo').disabled = !state.canRedo;
 }
+
+// --- 少数派ボーナス設定 ---
+function renderMinorityRules(minorityRules) {
+  if (!minorityRules) return;
+  const active = document.activeElement;
+  const setIfNotEditing = (id, value, isCheckbox) => {
+    const el = document.getElementById(id);
+    if (el === active) return; // 入力中の欄は上書きしない
+    if (isCheckbox) el.checked = !!value; else el.value = value;
+  };
+  setIfNotEditing('minority-correct-enabled', minorityRules.correct.enabled, true);
+  setIfNotEditing('minority-correct-threshold', minorityRules.correct.thresholdPercent);
+  setIfNotEditing('minority-correct-points', minorityRules.correct.points);
+  setIfNotEditing('minority-incorrect-enabled', minorityRules.incorrect.enabled, true);
+  setIfNotEditing('minority-incorrect-threshold', minorityRules.incorrect.thresholdPercent);
+  setIfNotEditing('minority-incorrect-points', minorityRules.incorrect.points);
+}
+
+document.getElementById('btn-save-minority-rules').onclick = () => {
+  const minorityRules = {
+    correct: {
+      enabled: document.getElementById('minority-correct-enabled').checked,
+      thresholdPercent: Number(document.getElementById('minority-correct-threshold').value) || 0,
+      points: Number(document.getElementById('minority-correct-points').value) || 0
+    },
+    incorrect: {
+      enabled: document.getElementById('minority-incorrect-enabled').checked,
+      thresholdPercent: Number(document.getElementById('minority-incorrect-threshold').value) || 0,
+      points: Number(document.getElementById('minority-incorrect-points').value) || 0
+    }
+  };
+  socket.emit('judge_update_minority_rules', { minorityRules });
+  document.getElementById('minority-rules-status').textContent = '保存しました';
+  setTimeout(() => { document.getElementById('minority-rules-status').textContent = ''; }, 2000);
+};
 
 // --- 投影画面での早押し演出設定 ---
 let buzzEffectSelectsBound = false;

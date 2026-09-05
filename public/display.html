@@ -36,13 +36,13 @@
     <div style="margin-top:1.2em; padding-top:1em; border-top:1px solid var(--line);">
       <h4 style="margin:0 0 .4em;">ボタンの割り当て（機種を問わず使えます）</h4>
       <p class="hint">お使いの早押し機がどんな文字列を送ってくるか分からなくても構いません。
-        下で席番号（回答者が入室時に入力した番号）を指定して「学習開始」を押し、その席の人が
-        使う実物のボタンを押してください。受信した内容がそのまま自動で登録されます。</p>
+        下で割り当てたい参加者を選んで「学習開始」を押し、その人が使う実物のボタンを
+        押してください。受信した内容がそのまま自動で登録されます。</p>
 
       <div style="display:flex; gap:.6em; align-items:end; flex-wrap:wrap; margin-top:.8em;">
         <div class="field" style="margin:0;">
-          <label>席番号</label>
-          <input type="number" id="learn-buzzer-id-input" min="1" style="width:6em;">
+          <label>参加者</label>
+          <select id="learn-player-select" style="min-width:10em;"></select>
         </div>
         <button class="gold" id="btn-start-learn">学習開始</button>
         <button class="secondary" id="btn-cancel-learn" style="display:none;">キャンセル</button>
@@ -184,8 +184,9 @@ function render(state) {
   latestState = state;
   renderTimer(state.timer);
   renderQuestionPanel(state.questionPanel);
-  renderSignalMapList(state.buzzerSignalMap);
-  renderLearnStatus(state.pendingLearnTarget);
+  renderSignalMapList(state.buzzerSignalMap, state.players);
+  renderLearnStatus(state.pendingLearnTarget, state.players);
+  renderLearnPlayerSelect(state.players);
 
   const stage = document.getElementById('stage');
   if (state.display.mode === 'single' && state.display.selectedPlayerId) {
@@ -422,28 +423,44 @@ function parseBuzzerIdFromLine(line) {
 // --- ボタンの割り当て（機種を問わない汎用の学習機能） ---
 // 対応表(buzzerSignalMap)・学習モードの状態はサーバー側で管理されており、
 // room_state に載って全クライアントに配信される。ここでは表示と操作だけを行う。
-socket.on('signal_learned', ({ signal, buzzerId }) => {
-  document.getElementById('learn-status').textContent = `「${signal}」を ${buzzerId}番 として登録しました`;
+// 割り当ては「席番号」ではなく「参加者(playerId)」に対して直接行う。
+socket.on('signal_learned', ({ signal, playerName }) => {
+  document.getElementById('learn-status').textContent = `「${signal}」を ${playerName || '(不明)'} さんに割り当てました`;
 });
 socket.on('unmapped_signal', ({ signal }) => {
   document.getElementById('unmapped-signal-status').textContent =
     `未割り当ての信号を受信しました: 「${signal}」（下の「学習開始」でこの信号を割り当てできます）`;
 });
 
-function renderSignalMapList(buzzerSignalMap) {
+// 参加者の入退室に応じて選択肢を更新する（選択中の値はできるだけ保持する）
+function renderLearnPlayerSelect(players) {
+  const select = document.getElementById('learn-player-select');
+  const prevValue = select.value;
+  const list = players || [];
+  if (!list.length) {
+    select.innerHTML = '<option value="">(参加者がいません)</option>';
+    return;
+  }
+  select.innerHTML = list.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+  if (list.some((p) => p.id === prevValue)) select.value = prevValue;
+}
+
+function renderSignalMapList(buzzerSignalMap, players) {
   const list = document.getElementById('signal-map-list');
   const entries = buzzerSignalMap || [];
   if (!entries.length) {
     list.innerHTML = '<div class="hint">まだ何も割り当てられていません</div>';
     return;
   }
+  const nameById = new Map((players || []).map((p) => [p.id, p.name]));
   list.innerHTML = '';
-  entries.forEach(({ signal, buzzerId }) => {
+  entries.forEach(({ signal, playerId }) => {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex; align-items:center; gap:.6em; padding:.4em .2em; border-top:1px solid var(--line);';
+    const name = nameById.get(playerId) || '(退室済み)';
     row.innerHTML = `
       <span style="flex:1; font-family:monospace; word-break:break-all;">${escapeHtml(signal)}</span>
-      <span style="color:var(--gold); font-weight:900;">→ ${buzzerId}番</span>
+      <span style="color:var(--gold); font-weight:900;">→ ${escapeHtml(name)}</span>
     `;
     const delBtn = document.createElement('button');
     delBtn.className = 'danger';
@@ -455,13 +472,14 @@ function renderSignalMapList(buzzerSignalMap) {
   });
 }
 
-function renderLearnStatus(pendingLearnTarget) {
+function renderLearnStatus(pendingLearnTarget, players) {
   const startBtn = document.getElementById('btn-start-learn');
   const cancelBtn = document.getElementById('btn-cancel-learn');
-  if (pendingLearnTarget !== null && pendingLearnTarget !== undefined) {
+  if (pendingLearnTarget) {
+    const name = ((players || []).find((p) => p.id === pendingLearnTarget) || {}).name || '(不明)';
     startBtn.disabled = true;
     cancelBtn.style.display = 'inline-block';
-    document.getElementById('learn-status').textContent = `${pendingLearnTarget}番として登録します。実物のボタンを押してください…`;
+    document.getElementById('learn-status').textContent = `${name} さんに登録します。実物のボタンを押してください…`;
   } else {
     startBtn.disabled = false;
     cancelBtn.style.display = 'none';
@@ -469,9 +487,9 @@ function renderLearnStatus(pendingLearnTarget) {
 }
 
 document.getElementById('btn-start-learn').onclick = () => {
-  const n = Number(document.getElementById('learn-buzzer-id-input').value);
-  if (!Number.isInteger(n) || n < 1) { alert('1以上の整数で席番号を入力してください'); return; }
-  socket.emit('start_learn_signal', { buzzerId: n });
+  const playerId = document.getElementById('learn-player-select').value;
+  if (!playerId) { alert('参加者を選択してください'); return; }
+  socket.emit('start_learn_signal', { playerId });
 };
 document.getElementById('btn-cancel-learn').onclick = () => {
   socket.emit('cancel_learn_signal');

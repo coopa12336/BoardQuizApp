@@ -332,9 +332,22 @@ canvas { display: block; touch-action: none; }
   display: flex;
   align-items: center;
   justify-content: center;
+  position: relative;
+  overflow: hidden;
 }
-.display-tile-canvas img { width: 100%; height: 100%; object-fit: contain; }
-.display-tile-canvas canvas { width: 100%; height: 100%; }
+/* img/canvasは絶対配置にして通常のフローから完全に外す。
+   こうしないと、参加者ごとに違う画像の縦横比（スマホは縦長、PCは横長など）が
+   「中身の最小サイズ」としてグリッドの行・列に伝わってしまい、一番大きい人の
+   画面比率にグリッド全体のマスサイズが引っ張られてしまう（今回の不具合の原因）。
+   絶対配置なら中身のサイズがレイアウト計算に一切影響しなくなる。 */
+.display-tile-canvas img,
+.display-tile-canvas canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
 
 .buzz-banner {
   text-align: center;
