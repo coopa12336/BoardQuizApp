@@ -28,11 +28,13 @@
     <p class="hint">実物の早押し機が無くても、この画面から早押しに参加できます。
       ボタンをタップするか、下で設定したキーボードのキーを押してください。</p>
 
-    <button id="btn-virtual-buzz" class="danger" style="
-      width:100%; max-width:220px; aspect-ratio:1; border-radius:50%; margin:1em auto;
-      display:flex; align-items:center; justify-content:center; font-size:1.3rem;
-      font-weight:900; box-shadow:0 6px 0 #8a2a2e, 0 8px 16px rgba(0,0,0,.4);
-    ">押す！</button>
+    <div class="virtual-buzzer-wrap" id="btn-virtual-buzz">
+      <div class="virtual-buzzer-dome">
+        <div class="virtual-buzzer-dome-highlight"></div>
+        <span class="virtual-buzzer-label">押す</span>
+      </div>
+      <div class="virtual-buzzer-base"></div>
+    </div>
 
     <div id="buzzer-result-status" class="hint" style="min-height:1.4em; margin:.4em 0 1em;"></div>
 
@@ -76,9 +78,17 @@
         <div id="phase-label" class="hint">出題を待っています…</div>
         <div id="timer-display" style="font-size:1.4rem; font-weight:900; font-variant-numeric:tabular-nums; color:var(--gold);"></div>
         <div style="display:flex; gap:.5em;">
-          <button class="secondary" id="btn-clear">消す</button>
+          <button class="secondary" id="btn-clear">全部消す</button>
           <button class="gold" id="btn-submit">回答を確定する</button>
         </div>
+      </div>
+      <div style="display:flex; align-items:center; gap:.5em; flex-wrap:wrap; margin-top:.6em; padding-top:.6em; border-top:1px solid var(--line);">
+        <div id="pen-color-swatches" style="display:flex; gap:.35em;"></div>
+        <input type="color" id="pen-color-custom" value="#111111" title="色をカスタム選択" style="width:2.2em; height:2.2em; padding:0; border:2px solid var(--line); border-radius:8px; background:none; cursor:pointer;">
+        <button class="secondary" id="btn-eraser" style="padding:.4em .8em; font-size:.85rem;">🧹 消しゴム</button>
+        <span style="flex:1;"></span>
+        <button class="secondary" id="btn-player-undo" disabled style="padding:.4em .8em; font-size:.85rem;">↩️ 元に戻す</button>
+        <button class="secondary" id="btn-player-redo" disabled style="padding:.4em .8em; font-size:.85rem;">↪️ やり直す</button>
       </div>
     </div>
 
@@ -115,6 +125,87 @@ const ctx = canvas.getContext('2d');
 
 let drawing = false;
 let locked = false;
+
+// --- ペンの色・消しゴム ---
+const PEN_COLORS = ['#111111', '#e6484f', '#4cc9f0', '#45c98a', '#f2b705'];
+const DEFAULT_LINE_WIDTH = 6;
+const ERASER_LINE_WIDTH = 26;
+let currentColor = PEN_COLORS[0];
+let isEraser = false;
+
+function activeColor() { return isEraser ? '#ffffff' : currentColor; }
+function activeLineWidth() { return isEraser ? ERASER_LINE_WIDTH : DEFAULT_LINE_WIDTH; }
+
+function renderPenToolbar() {
+  const swatchWrap = document.getElementById('pen-color-swatches');
+  swatchWrap.innerHTML = '';
+  PEN_COLORS.forEach((color) => {
+    const swatch = document.createElement('button');
+    swatch.className = 'secondary';
+    swatch.style.cssText = `width:2.2em; height:2.2em; padding:0; border-radius:8px; background:${color}; border:2px solid ${(!isEraser && color === currentColor) ? 'var(--gold)' : 'var(--line)'};`;
+    swatch.onclick = () => {
+      currentColor = color;
+      isEraser = false;
+      renderPenToolbar();
+    };
+    swatchWrap.appendChild(swatch);
+  });
+  document.getElementById('btn-eraser').style.outline = isEraser ? '2px solid var(--gold)' : 'none';
+}
+
+document.getElementById('pen-color-custom').addEventListener('input', (evt) => {
+  currentColor = evt.target.value;
+  isEraser = false;
+  renderPenToolbar();
+});
+document.getElementById('btn-eraser').onclick = () => {
+  isEraser = !isEraser;
+  renderPenToolbar();
+};
+renderPenToolbar();
+
+// --- 自分のボード専用のUndo/Redo（ストロークを描き始める前の状態を保存しておく） ---
+let undoStack = [];
+let redoStack = [];
+const MAX_UNDO_STEPS = 30;
+
+function updateUndoRedoButtons() {
+  document.getElementById('btn-player-undo').disabled = !undoStack.length;
+  document.getElementById('btn-player-redo').disabled = !redoStack.length;
+}
+
+function pushUndoSnapshot() {
+  try {
+    undoStack.push(canvas.toDataURL('image/png'));
+    if (undoStack.length > MAX_UNDO_STEPS) undoStack.shift();
+    redoStack = []; // 新しい書き込みをしたらredo履歴は破棄する
+    updateUndoRedoButtons();
+  } catch (e) { /* 保存できなくてもUndo以外の動作は継続する */ }
+}
+
+function restoreCanvasSnapshot(dataUrl) {
+  const rect = canvas.getBoundingClientRect();
+  const img = new Image();
+  img.onload = () => {
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, rect.width, rect.height);
+    ctx.drawImage(img, 0, 0, rect.width, rect.height);
+  };
+  img.src = dataUrl;
+}
+
+document.getElementById('btn-player-undo').onclick = () => {
+  if (!undoStack.length) return;
+  redoStack.push(canvas.toDataURL('image/png'));
+  restoreCanvasSnapshot(undoStack.pop());
+  updateUndoRedoButtons();
+};
+document.getElementById('btn-player-redo').onclick = () => {
+  if (!redoStack.length) return;
+  undoStack.push(canvas.toDataURL('image/png'));
+  restoreCanvasSnapshot(redoStack.pop());
+  updateUndoRedoButtons();
+};
 
 // タブレットの画面サイズ・向きに合わせて、ボードの「見えている領域」いっぱいに
 // 描画できるようにする。
@@ -176,11 +267,14 @@ function normPoint(evt) {
 
 function startDraw(evt) {
   if (locked) return;
+  pushUndoSnapshot(); // 描き始める前の状態を保存しておく（Undoで戻れるようにする）
   drawing = true;
   const p = normPoint(evt);
+  ctx.strokeStyle = activeColor();
+  ctx.lineWidth = activeLineWidth();
   ctx.beginPath();
   ctx.moveTo(p.x, p.y);
-  socket.emit('draw_stroke', { phase: 'start', x: p.fx, y: p.fy });
+  socket.emit('draw_stroke', { phase: 'start', x: p.fx, y: p.fy, color: activeColor(), lineWidth: activeLineWidth() });
   evt.preventDefault();
 }
 function moveDraw(evt) {
@@ -212,6 +306,7 @@ function clearCanvas() {
 
 document.getElementById('btn-clear').onclick = () => {
   if (locked) return;
+  pushUndoSnapshot(); // 全消去もUndoで戻せるようにしておく
   clearCanvas();
   socket.emit('clear_canvas');
 };
@@ -259,9 +354,7 @@ function applyState(state) {
 
   renderScoreboard(state);
   renderTimer(state.timer);
-  if (document.getElementById('buzzer-overlay').style.display === 'flex') {
-    renderBuzzerResultStatus(state);
-  }
+  renderBuzzerResultStatus(state);
 
   // ラベルの文言変化（ロック表示・タイマー表示の有無など）でヘッダー行の高さが
   // 変わることがあるため、その都度キャンバスのサイズを再計算して画面内に収める
@@ -319,9 +412,11 @@ document.getElementById('buzzer-key-label').textContent = buzzerKey;
 
 function triggerVirtualBuzz() {
   socket.emit('player_buzz');
-  const btn = document.getElementById('btn-virtual-buzz');
-  btn.style.transform = 'scale(.92)';
-  setTimeout(() => { btn.style.transform = 'scale(1)'; }, 120);
+  const dome = document.querySelector('#btn-virtual-buzz .virtual-buzzer-dome');
+  if (dome) {
+    dome.style.transform = 'translateX(-50%) scale(.94)';
+    setTimeout(() => { dome.style.transform = ''; }, 120);
+  }
 }
 
 document.getElementById('btn-virtual-buzz').onclick = triggerVirtualBuzz;
@@ -357,16 +452,31 @@ window.addEventListener('keydown', (evt) => {
   }
 });
 
-// 早押し結果（自分が何着だったか）をボタンの下に表示する
+// 早押し結果（自分が何着だったか）を表示する。
+// 1着ならランプ（ドーム部分）を点滅させ、2着以降は1着との着差タイムを表示する
+// （サーバー側のタイムスタンプを使うため、端末ごとの時計のズレの影響を受けない）。
 let latestState = null;
 function renderBuzzerResultStatus(state) {
   const el = document.getElementById('buzzer-result-status');
-  if (!state) { el.textContent = ''; return; }
-  const idx = (state.buzzOrder || []).findIndex((b) => b.playerId === socket.id);
+  const dome = document.querySelector('#btn-virtual-buzz .virtual-buzzer-dome');
+  if (!state) { el.textContent = ''; if (dome) dome.classList.remove('lit'); return; }
+
+  const order = state.buzzOrder || [];
+  const idx = order.findIndex((b) => b.playerId === socket.id);
+
   if (idx === -1) {
     el.textContent = state.buzzAccepting ? '早押し受付中です' : 'まだ早押しは始まっていません';
+    if (dome) dome.classList.remove('lit');
+    return;
+  }
+
+  if (idx === 0) {
+    el.innerHTML = `⚡ <strong style="color:var(--gold);">1着でした！</strong>`;
+    if (dome) dome.classList.add('lit');
   } else {
-    el.textContent = `⚡ あなたは ${idx + 1}着 でした！`;
+    if (dome) dome.classList.remove('lit');
+    const diffSec = ((order[idx].ts - order[0].ts) / 1000).toFixed(2);
+    el.innerHTML = `${idx + 1}着でした（1着との差 <strong style="color:var(--gold);">+${diffSec}秒</strong>）`;
   }
 }
 
@@ -426,6 +536,9 @@ socket.on('reset_canvases', () => {
   clearCanvas();
   locked = false;
   document.getElementById('submit-status').textContent = '';
+  undoStack = [];
+  redoStack = [];
+  updateUndoRedoButtons();
 });
 </script>
 </body>

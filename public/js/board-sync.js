@@ -30,12 +30,17 @@ const BoardSync = (() => {
     entry.ctx.fillRect(0, 0, entry.canvas.width, entry.canvas.height);
   }
 
-  function stroke(playerId, { phase, x, y }) {
+  function stroke(playerId, { phase, x, y, color, lineWidth }) {
     const entry = ensure(playerId);
     const { ctx, canvas } = entry;
     const cx = x * canvas.width;
     const cy = y * canvas.height;
     if (phase === 'start') {
+      // 色・太さは各ストロークの開始時に送られてくる（回答者側でペンの色や
+      // 消しゴムを切り替えた場合も、ここで正しく反映される）。省略時は
+      // 黒ペンとして扱う（後方互換のため）。
+      ctx.strokeStyle = color || '#111';
+      ctx.lineWidth = lineWidth || 6;
       ctx.beginPath();
       ctx.moveTo(cx, cy);
     } else if (phase === 'move') {

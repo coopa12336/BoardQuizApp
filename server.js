@@ -457,7 +457,8 @@ io.on('connection', (socket) => {
   // プレイヤーの手書きストローク（リアルタイム描画同期）
   socket.on('draw_stroke', (data) => {
     if (!joinedRoom || role !== 'player') return;
-    // data: { phase: 'start'|'move'|'end', x, y } 座標は0-1の正規化値
+    // data: { phase: 'start'|'move'|'end', x, y, color?, lineWidth? } 座標は0-1の正規化値
+    // color/lineWidthは'start'の時だけ送られてくる（ペンの色・消しゴムの切り替え用）
     socket.to(joinedRoom).emit('draw_stroke', { playerId: socket.id, ...data });
   });
 
